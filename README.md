@@ -1,9 +1,7 @@
 # Clojure Lox
 
 A tree-walking interpreter for the **Lox** programming language, written in
-**Clojure**, following Robert Nystrom's *[Crafting Interpreters]* (Part II,
-`jlox`). The book implements Lox in Java; this repository re-implements it in
-Clojure, chapter by chapter.
+**Clojure**.
 
 [Crafting Interpreters]: https://craftinginterpreters.com/
 
