@@ -1,0 +1,12 @@
+;;;; tools.deps build configuration for the Clojure Lox interpreter.
+;;;;
+;;;; Usage:
+;;;;   clojure -M:test              ; run the full unit-test suite (all chapters)
+;;;;   clojure -M -m lox.core f.lox ; run a Lox script
+;;;;   clojure -M -m lox.core       ; start the Lox REPL
+{:paths ["src"]
+ :deps  {org.clojure/clojure {:mvn/version "1.11.1"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         :main-opts   ["-m" "lox.test-runner"]}
+  :run  {:main-opts ["-m" "lox.core"]}}}

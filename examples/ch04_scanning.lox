@@ -1,0 +1,21 @@
+// Chapter 4 sample input: this file is not executed yet (there is no parser
+// or interpreter until later chapters). Running it prints the token stream,
+// which is the whole of the chapter 4 deliverable.
+
+/* Block comments are the chapter 4 challenge, and they nest:
+   /* like this */
+   so this line is still inside a comment. */
+
+var language = "lox";
+var pi = 3.14159;
+var big = 1234;
+
+fun fact(n) {
+  if (n <= 1) return 1;
+  return n * fact(n - 1);
+}
+
+// Every operator in the lexical grammar:
+!*+-/=<> <= >= == != ( ) { } , . ;
+
+print fact(5); // 120
