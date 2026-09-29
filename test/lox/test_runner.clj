@@ -11,11 +11,13 @@
 ;;;; =============================================================================
 (ns lox.test-runner
   (:require [clojure.test :as t]
-            [lox.chapter-04-scanning-test]))
+            [lox.chapter-04-scanning-test]
+            [lox.chapter-05-ast-test]))
 
 (def chapter-namespaces
   "Chapter test namespaces, in book order."
-  ['lox.chapter-04-scanning-test])
+  ['lox.chapter-04-scanning-test
+   'lox.chapter-05-ast-test])
 
 (defn -main
   "Run every chapter's tests (or just the namespaces named on the command
