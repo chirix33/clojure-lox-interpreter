@@ -1,5 +1,8 @@
 # Clojure Lox
 
+**Name**: Ashraf Abdul-Muumin
+
+## Description
 A tree-walking interpreter for the **Lox** programming language, written in
 **Clojure**.
 
