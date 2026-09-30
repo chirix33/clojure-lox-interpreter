@@ -73,6 +73,10 @@
 ;;;; a whole `stmt` family, 9 `logical`, 10 `call`, 12 `get`/`set`/`this`, 13
 ;;;; `super`). Each is one more entry in the `define-ast` map below - no other
 ;;;; file has to change in order to *declare* it.
+;;;;
+;;;; UPDATED IN CHAPTER 6: `:conditional` was added for challenge 6.2's ternary
+;;;; operator. The four productions listed above are still exactly chapter 5's;
+;;;; see the comment on the node itself.
 ;;;; =============================================================================
 (ns lox.ast
   (:require [clojure.string :as str]
@@ -201,7 +205,23 @@
   {:binary   [[:expr left] [:token operator] [:expr right]]
    :grouping [[:expr expression]]
    :literal  [[:object value]]
-   :unary    [[:token operator] [:expr right]]})
+   :unary    [[:token operator] [:expr right]]
+
+   ;; Chapter 6, challenge 6.2 - the ternary conditional `c ? t : e`.
+   ;;
+   ;; The book has no such node; this is the first demonstration that the
+   ;; chapter-5 claim above actually holds. Adding a production to the language
+   ;; is one line here, and the only other places that had to change are the
+   ;; ones that genuinely *do* something per node type - the two visitors in
+   ;; `lox.ast-printer`, which `defvisitor` refused to compile until they
+   ;; handled it. That compile-time nag is exactly the guarantee the book gets
+   ;; from implementing `Expr.Visitor<R>`.
+   ;;
+   ;; It is a node of its own rather than a nested :binary pair because the
+   ;; three operands are genuinely one construct: chapter 7 must evaluate the
+   ;; condition and then exactly one branch, which a :binary tree could not
+   ;; express without special-casing the `?` and `:` tokens anyway.
+   :conditional [[:expr condition] [:expr then-branch] [:expr else-branch]]})
 
 ;;; ---------------------------------------------------------------------------
 ;;; Generic node access

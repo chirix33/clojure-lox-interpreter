@@ -5,13 +5,13 @@ A tree-walking interpreter for the **Lox** programming language, written in
 
 [Crafting Interpreters]: https://craftinginterpreters.com/
 
-**Current state: Chapter 5 — Representing Code.**
+**Current state: Chapter 6 — Parsing Expressions.**
 
 | Chapter | Topic | Status |
 | ------- | ----- | ------ |
 | 4  | Scanning                | ✅ complete |
 | 5  | Representing Code       | ✅ complete |
-| 6  | Parsing Expressions     | not started |
+| 6  | Parsing Expressions     | ✅ complete |
 | 7  | Evaluating Expressions  | not started |
 | 8  | Statements and State    | not started |
 | 9  | Control Flow            | not started |
@@ -36,16 +36,31 @@ the Clojure CLI installed. If you do have them, the standard commands work too.
 
 ```bash
 ./scripts/test.sh                        # run the whole unit-test suite
-./scripts/lox.sh examples/ch04_scanning.lox
+./scripts/lox.sh examples/ch06_parsing.lox   # parse and print a syntax tree
 ./scripts/lox.sh                         # interactive REPL (Ctrl-D to exit)
-./scripts/astdemo.sh                     # chapter 5: print a syntax tree
+./scripts/lox.sh --tokens examples/ch04_scanning.lox   # chapter 4 token dump
+./scripts/astdemo.sh                     # chapter 5: hand-built syntax tree
+```
+
+As of chapter 6 the REPL parses what you type and prints the resulting syntax
+tree, so you can see precedence and associativity directly:
+
+```
+> 1 + 2 * 3
+(+ 1.0 (* 2.0 3.0))
+> (1 + 2) * 3
+(* (group (+ 1.0 2.0)) 3.0)
+> 5 - 3 - 1
+(- (- 5.0 3.0) 1.0)
+> 1 +
+[line 1] Error at end: Expect expression.
 ```
 
 On Windows PowerShell, use the `.ps1` equivalents:
 
 ```bash
 powershell -File scripts/test.ps1
-powershell -File scripts/lox.ps1 examples/ch04_scanning.lox
+powershell -File scripts/lox.ps1 examples/ch06_parsing.lox
 powershell -File scripts/astdemo.ps1
 ```
 
@@ -57,7 +72,7 @@ git-ignored.
 
 ```bash
 lein test
-lein run examples/ch04_scanning.lox
+lein run examples/ch06_parsing.lox
 lein run                                 # REPL
 lein run -m lox.ast-printer              # chapter 5 demo
 lein uberjar
@@ -67,7 +82,7 @@ lein uberjar
 
 ```bash
 clojure -M:test
-clojure -M -m lox.core examples/ch04_scanning.lox
+clojure -M -m lox.core examples/ch06_parsing.lox
 clojure -M -m lox.core                   # REPL
 clojure -M -m lox.ast-printer            # chapter 5 demo
 ```
@@ -94,15 +109,18 @@ src/lox/
   core.clj       Chapter 4 — CLI entry point: main / runFile / runPrompt / run
   ast.clj        Chapter 5 — the expression AST: define-ast, nodes, visitors
   ast_printer.clj Chapter 5 — AstPrinter (5.4) and the RPN printer (chal. 5.3)
+  parser.clj     Chapter 6 — the recursive descent parser
 
 test/lox/
   test_util.clj                 shared fixtures and helpers
   test_runner.clj               dependency-free runner (`-m lox.test-runner`)
   chapter_04_scanning_test.clj  Chapter 4 tests
   chapter_05_ast_test.clj       Chapter 5 tests
+  chapter_06_parsing_test.clj   Chapter 6 tests
 
 examples/
   ch04_scanning.lox             sample input exercising the lexical grammar
+  ch06_parsing.lox              one expression exercising every precedence level
 
 scripts/
   bootstrap.{sh,ps1}  fetch the Clojure jars into lib/
@@ -112,6 +130,7 @@ scripts/
 
 docs/
   chapter05-challenges.md   written answers to challenges 5.1 and 5.2
+  chapter06-challenges.md   challenges 6.1-6.3: grammars, design notes, switches
 ```
 
 Every source file carries a header comment naming the chapter it comes from
@@ -194,6 +213,73 @@ so generic traversals (counting nodes, measuring depth, searching) will work
 for every node type chapters 8-13 add, for free. That is the other half of the
 expression problem section 5.3 describes.
 
+### Chapter 6 - Parsing Expressions
+
+**The parser is a value, not a mutable object.** The book's `Parser` holds a
+token list and a mutable cursor `int current`, and every helper advances it by
+side effect. Here the parser is a state map `{:tokens [...] :current 0}` and
+every grammar rule is a pure function
+
+```
+state -> [state' expr]
+```
+
+which is the functional reading of `private Expr rule()`: the `Expr` is the
+second element, and the cursor movement Java hid in `this.current` is the
+first. This is the same treatment chapter 4's scanner gave `start`/`current`,
+so the two phases read alike. It is wordier than `current++` at each call site,
+but it buys two things that matter directly for testing: any rule can be run
+against any token stream in isolation, and a failed parse cannot leave a shared
+object half-advanced.
+
+**`match` returns a state or nil, not a boolean.** The book's `match()` returns
+`true` *and* advances the cursor as a side effect, so "did it match" and "where
+are we now" are separated. Returning the advanced state (or nil) keeps them
+together at the call site:
+
+```clojure
+(if-let [state' (match state :bang :minus)] ...)
+```
+
+**The four binary levels are one higher-order function.** `equality`,
+`comparison`, `term` and `factor` are, in the book, four textually identical
+methods differing only in which token types they match and which method they
+call for operands. The book's own margin note suggests factoring them - "If you
+wanted to do some clever Java 8, you could create a helper method for parsing a
+left-associative series of binary operators" - and `parse-left-assoc-binary` is
+that helper. The payoff is that the precedence table becomes **data**:
+
+```clojure
+(def binary-levels
+  [{:rule :equality   :operators [:bang-equal :equal-equal]}
+   {:rule :comparison :operators [:greater :greater-equal :less :less-equal]}
+   {:rule :term       :operators [:minus :plus]}
+   {:rule :factor     :operators [:slash :star]}])
+```
+
+The book encodes the same table in the *call graph* of its methods (`equality`
+happens to call `comparison`, which happens to call `term`). Having it as data
+means the precedence order can be read off in one place, asserted in a test,
+and reused - challenge 6.3's error-production table is derived from it, so the
+two cannot drift apart.
+
+**Panic mode still uses an exception.** Section 6.3.3's argument is that in
+recursive descent the parser's state *is* the call stack, so unwinding to a
+synchronization point means unwinding the stack. That reasoning applies
+verbatim to a stack of Clojure calls, so `ParseError` becomes an `ex-info`
+tagged `::parse-error`, thrown by `error!` and caught in `parse`. The one
+change: the book's `error()` *returns* the exception so each call site can
+choose whether to throw. `error!` always throws, and a site that wants to
+report and keep going calls `lox.errors/error` directly - the same flexibility,
+but visible at the call site rather than in the control flow.
+
+**`synchronize` is written now and tested now.** Nothing calls it in anger
+until chapter 8, since chapter 6 has no statements to synchronize between. It
+is written here anyway because it belongs with the rest of the error recovery,
+and it is unit-tested directly - including the property that makes it safe to
+call in a loop: it always consumes at least one token, so a caller can never
+spin forever on a bad one.
+
 ## Deviations from the book
 
 I added one deliberate addition, from the chapter's own challenge list:
@@ -216,6 +302,52 @@ Chapter 5's challenges:
   would otherwise be ambiguous between subtraction and negation, and an RPN
   rendering that cannot be evaluated is not much of a rendering. Unary `!`
   keeps its lexeme, since Lox has no binary `!`.
+
+Chapter 6's challenges (full write-up in `docs/chapter06-challenges.md`):
+
+* **Challenge 6.1 - the comma operator** and **challenge 6.2 - the ternary
+  `?:`** are both implemented and tested, but are **off by default**, behind
+  `lox.parser/*allow-comma?*` and `lox.parser/*allow-conditional?*`.
+
+  This is the one place where a challenge is not simply left on. Chapter 4's
+  block comments could be, because they are a strict superset - no valid
+  program changes meaning. A comma expression at the lowest precedence level is
+  not: `,` is a separator elsewhere in the language the rest of the book builds,
+  so `f(a, b)` in chapter 10 would parse as a call with the *single* argument
+  `(a, b)`. C hits the same conflict and resolves it with a special case in the
+  grammar for function arguments; threading that special case through several
+  later chapters, for a feature the book's Lox does not have, is not worth it.
+  So the default grammar is exactly the book's, and the challenge code is real,
+  reachable and tested under `binding`.
+
+  The ternary needed two supporting changes: `?` and `:` became scannable
+  tokens (`:question`, `:colon`), and `:conditional` was added to `define-ast`.
+  That addition was a fair test of chapter 5's claim that a new production
+  costs one line - it did, plus the two visitors in `lox.ast_printer`, which
+  `defvisitor` refused to compile until they handled the new node. That
+  compile-time nag is exactly the guarantee the book gets from
+  `implements Expr.Visitor<R>`, and it worked as advertised.
+
+* **Challenge 6.3 - error productions for a binary operator with no left
+  operand** is **on** by default, because it can only fire on input that is
+  already a syntax error. `* 3` now reports "Binary operator '*' requires a
+  left-hand operand." instead of the generic "Expect expression.", and - the
+  important half of the challenge - consumes the operator's right operand *at
+  the operator's own precedence level*, so `* 1 + 2` produces one error rather
+  than a cascade. `-` is excluded from the check, since a leading `-` is a
+  legal unary operator rather than a mistake.
+
+One further deviation, not from a challenge: **`parse` reports leftover
+tokens.** The book's chapter 6 `parse()` parses one expression and returns,
+silently ignoring anything after it - so `1, 2` would quietly parse as `1` with
+no indication that half the input went unread. The hole closes on its own in
+chapter 8, where `parse` loops until `:eof`; until then it is closed explicitly
+with "Expect end of expression."
+
+And one small addition for the sake of the earlier submission: `run` now parses
+and prints a tree, as section 6.4 says, but chapter 4's token dump is still
+reachable as `lox.core --tokens <script>` rather than being deleted, so the
+chapter 4 example stays runnable.
 
 The AST printer's numbers deserve a note: it prints what is in the tree, so a
 `NUMBER` token scanned from the source `123` shows as `123.0`. Trimming that
@@ -301,12 +433,70 @@ Covering:
   book says it should
 * **error state** - that building and printing trees reports no errors
 
+### Chapter 6 - 83 test cases / 335 assertions
+
+Covering:
+
+* **the parser primitives** - `peek`/`previous`/`check`/`advance`/`match`/
+  `consume`, including the `:eof` boundary: that `check` never matches at
+  `:eof` (even when asked for `:eof` itself), that `advance` past the end is a
+  no-op so no rule can run off the token vector, and that `match` returns the
+  advanced state on success and nil - consuming nothing - on failure
+* **every production of section 6.1** - all three literal forms plus the three
+  keyword literals (asserting the *values* `true`/`false`/nil, not the keyword
+  names), grouping and nested grouping, both unary operators, and all ten
+  binary operators driven from the `binary-levels` table so a missing one
+  cannot pass unnoticed
+* **associativity** - the book's own `5 - 3 - 1` example; every binary level
+  leaning left; the book's `a == b == c == d == e` diagram reproduced; mixed
+  operators at one level (`1 + 2 - 3`); and unary nesting right-associatively
+  (`!!true`, `---1`)
+* **precedence** - the book's `6 / 3 - 1` ambiguity example now having exactly
+  one parse; each adjacent pair of levels tested in both orders (`1 + 2 * 3`
+  *and* `1 * 2 + 3`); one expression touching every level at once; and
+  grouping overriding all of it
+* **the precedence table as data** - that `precedence-order` runs loosest to
+  tightest and that each level lists exactly the book's operators
+* **syntax errors** - both of the chapter's messages ("Expect ')' after
+  expression.", "Expect expression."), reported against the right token and the
+  right *line*, with `at end` used at EOF where there is no lexeme to show
+* **the parser's hard requirements** - a table of 30 malformed inputs
+  (`"("`, `"))))"`, `"* * *"`, `"1.2.3"`, `"\"unterminated"`, ...) asserting
+  that none throws or hangs; that a `ParseError` never escapes `parse`; and
+  that a non-parse exception *is* allowed to propagate rather than being
+  swallowed by the catch
+* **synchronization** - stopping after a semicolon, stopping before each of the
+  eight statement keywords, running to `:eof` when nothing matches, and the
+  termination property: it always consumes at least one token, even when
+  already sitting on a keyword
+* **the challenges** - comma parsing, left-associativity and lowest precedence;
+  the ternary's right-associativity, its precedence relative to `==` and `,`,
+  its full-expression middle operand, and its three distinct error cases; both
+  defaulting to *off*; the error productions firing for all nine applicable
+  operators, `-` correctly exempt, exactly one error for `* 1 + 2`, and the
+  operand being parsed at the right precedence level
+* **structural invariants** - that every node the parser builds passes chapter
+  5's own field checking, walked over the whole tree; that operator tokens
+  arrive in the tree unmodified (so chapter 7 can report their lines); and that
+  parsing is pure - same tokens in, same tree out, token vector untouched
+* **depth and length** - 100 nested groupings and a 200-operator chain,
+  neither overflowing nor mis-associating
+* **the wiring of section 6.4** - that `run` prints the tree, prints *nothing*
+  when the parser errored, prints nothing when the *scanner* errored, and that
+  `--tokens` still produces chapter 4's dump
+* **documentation drift** - that the grammar recorded in `lox.parser/grammar`
+  quotes exactly the operators the `binary-levels` table implements, so the two
+  cannot be changed apart
+* **chapters 5 and 6 together** - that the tree chapter 5 had to hand-build is
+  now derived from the source text `-123 * (45.67)`
+
 Run a single namespace with:
 
 ```bash
 ./scripts/test.sh lox.chapter-04-scanning-test
 ./scripts/test.sh lox.chapter-05-ast-test
+./scripts/test.sh lox.chapter-06-parsing-test
 ```
 ## Note on AI Usage:
 
-AI has been used to re-organize code I have written by hand and help me with documentation and comment insertion. Unit tests, interpreter logic writing, and decisions were solely made by me
+AI has been used to re-organize code I have written by hand and help me with documentation and comment insertion. Unit tests, interpreter logic writing, and decisions were solely made by me.

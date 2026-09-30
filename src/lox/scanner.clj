@@ -26,6 +26,9 @@
 ;;;;
 ;;;; Challenge 4.4 (block comments) is implemented as `scan-block-comment`,
 ;;;; including nesting. It is a strict superset of the book's grammar.
+;;;;
+;;;; Chapter 6 adds two lexemes here: `?` and `:`, needed by challenge 6.2's
+;;;; ternary conditional operator. See the note in `lox.token/token-types`.
 ;;;; =============================================================================
 (ns lox.scanner
   (:require [lox.token :as tok]
@@ -200,6 +203,10 @@
       \+ (add-token s :plus)
       \; (add-token s :semicolon)
       \* (add-token s :star)
+
+      ;; Chapter 6, challenge 6.2: the two halves of the ternary operator.
+      \? (add-token s :question)
+      \: (add-token s :colon)
 
       ;; Operators that may be one or two characters long.
       \! (if (matches? s \=) (add-token (advance s) :bang-equal)    (add-token s :bang))

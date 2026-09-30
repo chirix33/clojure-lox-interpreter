@@ -67,10 +67,23 @@
 ;;; 1. The grammar, as data
 ;;; ===========================================================================
 
+(def chapter-5-productions
+  "The four productions section 5.1.3 introduces.
+
+  Later chapters add more (chapter 6 adds `:conditional` for challenge 6.2),
+  so this test asserts that chapter 5's four are present and correctly shaped
+  rather than that they are the only ones - the point of `define-ast` is that
+  extending the family costs one line, and a test that forbade extension would
+  be testing the opposite of the design."
+  #{:binary :grouping :literal :unary})
+
 (deftest grammar-table-matches-the-book
-  (testing "exactly the four productions of section 5.1.3 are defined"
-    (is (= #{:binary :grouping :literal :unary} ast/expr-node-types))
-    (is (= #{:binary :grouping :literal :unary} (set (keys ast/expr-types)))))
+  (testing "the four productions of section 5.1.3 are defined"
+    (is (every? ast/expr-node-types chapter-5-productions))
+    (is (every? (set (keys ast/expr-types)) chapter-5-productions)))
+
+  (testing "the node-type set and the field table describe the same family"
+    (is (= ast/expr-node-types (set (keys ast/expr-types)))))
 
   (testing "each node's fields match GenerateAst's type descriptions"
     ;; "Binary   : Expr left, Token operator, Expr right"
@@ -316,12 +329,17 @@
                                   (:binary [e] 1)
                                   (:literal [e] 2)))]
       (is (some? e) "expansion should have thrown")
-      (is (= #{:grouping :unary} (set (:missing (ex-data e)))))))
+      ;; Chapter 6 added :conditional to the family, so an incomplete visitor
+      ;; is now missing three productions rather than two. That this number
+      ;; changed *without* anything in lox.ast changing except one declaration
+      ;; line is the point of the design.
+      (is (= #{:grouping :unary :conditional} (set (:missing (ex-data e)))))))
 
   (testing "a visitor naming a node type that does not exist is rejected"
     (let [e (expansion-failure '(lox.ast/defvisitor bogus
                                   (:binary [e] 1) (:grouping [e] 1)
                                   (:literal [e] 1) (:unary [e] 1)
+                                  (:conditional [e] 1)
                                   (:nonsense [e] 1)))]
       (is (some? e) "expansion should have thrown")
       (is (= [:nonsense] (:unknown (ex-data e))))))
@@ -334,20 +352,22 @@
     (let [form (macroexpand '(lox.ast/defvisitor complete
                                "doc"
                                (:binary [e] 1) (:grouping [e] 2)
-                               (:literal [e] 3) (:unary [e] 4)))
+                               (:literal [e] 3) (:unary [e] 4)
+                               (:conditional [e] 5)))
           [head vname doc body] form]
       (is (= 'def head))
       (is (= 'complete vname))
       (is (= "doc" doc))
       (is (map? body))
-      (is (= #{:binary :grouping :literal :unary} (set (keys body)))))))
+      (is (= ast/expr-node-types (set (keys body)))))))
 
 (deftest defvisitor-produces-a-working-visitor
   (let [v (eval '(do (lox.ast/defvisitor built-here
-                       (:binary   [e] :b)
-                       (:grouping [e] :g)
-                       (:literal  [e] :l)
-                       (:unary    [e] :u))
+                       (:binary      [e] :b)
+                       (:grouping    [e] :g)
+                       (:literal     [e] :l)
+                       (:unary       [e] :u)
+                       (:conditional [e] :c))
                      built-here))]
     (is (= :l (ast/accept (ast/literal 1.0) v)))
     (is (= :b (ast/accept (ast/binary (ast/literal 1.0)

@@ -1,0 +1,23 @@
+// Chapter 6 - Parsing Expressions
+//
+// The interpreter does not evaluate anything yet, so running this file prints
+// the *syntax tree* the parser built, in the fully-parenthesised form that
+// chapter 5's AST printer produces. Reading it is how you check that
+// precedence and associativity came out right.
+//
+//   ./scripts/lox.sh examples/ch06_parsing.lox
+//
+// Only one expression per file can be parsed in chapter 6 (statements arrive
+// in chapter 8), so this file holds one expression that exercises every
+// precedence level at once:
+//
+//   unary binds tighter than factor  ->  -4 sits under the *
+//   factor binds tighter than term   ->  3 * -4 sits under the +
+//   term binds tighter than comparison
+//   comparison binds tighter than equality
+//
+// Expected output:
+//
+//   (== (< 1.0 (+ 2.0 (* 3.0 (- 4.0)))) false)
+
+1 < 2 + 3 * -4 == false

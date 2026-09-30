@@ -10,7 +10,9 @@
 ;;;; =============================================================================
 (ns lox.test-util
   (:require [clojure.string :as str]
+            [lox.ast-printer :as printer]
             [lox.errors :as err]
+            [lox.parser :as parser]
             [lox.scanner :as scanner]))
 
 ;;; ---------------------------------------------------------------------------
@@ -35,6 +37,22 @@
   "Scan `src` into tokens (errors land in `lox.errors`)."
   [src]
   (scanner/scan-tokens src))
+
+;;; Chapter 6 --------------------------------------------------------------
+
+(defn parse
+  "Scan and parse `src`, returning the expression node (or nil on error)."
+  [src]
+  (parser/parse (scanner/scan-tokens src)))
+
+(defn parse-str
+  "Scan, parse and pretty-print `src`. The compact way to assert on the *shape*
+  of a tree: `(is (= \"(+ 1.0 2.0)\" (parse-str \"1 + 2\")))` says everything
+  about precedence and associativity that a nested map comparison would, and
+  says it in one readable line."
+  [src]
+  (let [expr (parse src)]
+    (when expr (printer/print-ast expr))))
 
 (defn errors
   "The formatted error lines reported so far."

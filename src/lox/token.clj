@@ -23,6 +23,14 @@
     :left-paren :right-paren :left-brace :right-brace
     :comma :dot :minus :plus :semicolon :slash :star
 
+    ;; Chapter 6 (challenge 6.2) - the ternary conditional operator `?:`.
+    ;; Not part of the book's lexical grammar: the book's Lox has no use for
+    ;; either character, so its scanner rejects both as "Unexpected character."
+    ;; Scanning them is a harmless superset - a program that contains `?` or
+    ;; `:` was a scan error before and is a *parse* error now unless the
+    ;; challenge grammar is switched on (see `lox.parser/*allow-conditional?*`).
+    :question :colon
+
     ;; One or two character tokens.
     :bang :bang-equal
     :equal :equal-equal

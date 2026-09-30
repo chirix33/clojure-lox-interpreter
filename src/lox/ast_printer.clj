@@ -69,7 +69,17 @@
   (:literal  [{:keys [value]}]
              (literal->string value))
   (:unary    [{:keys [operator right]}]
-             (parenthesize (:lexeme operator) right)))
+             (parenthesize (:lexeme operator) right))
+
+  ;; Chapter 6, challenge 6.2. Printed as a three-operand prefix form:
+  ;;
+  ;;     a ? b : c   ->   (?: a b c)
+  ;;
+  ;; "?:" names the whole operator, the way "group" names a grouping - there is
+  ;; no single operator token to take a lexeme from, since the construct is
+  ;; spelled with two.
+  (:conditional [{:keys [condition then-branch else-branch]}]
+                (parenthesize "?:" condition then-branch else-branch)))
 
 (defn print-ast
   "Book: `AstPrinter.print(expr)`. Returns the string; it does not print it."
@@ -115,7 +125,15 @@
   (:unary    [{:keys [operator right]}]
              (str (rpn-of right) " "
                   (get unary-rpn-operators (:type operator)
-                       (:lexeme operator)))))
+                       (:lexeme operator))))
+
+  ;; Chapter 6, challenge 6.2. RPN has no standard spelling for a ternary, so
+  ;; we use the obvious extension: all three operands, then the operator.
+  ;; `?:` is unambiguous because it is the only three-operand form in Lox, so a
+  ;; stack machine reading this can still pop exactly the right arity.
+  (:conditional [{:keys [condition then-branch else-branch]}]
+                (str (rpn-of condition) " " (rpn-of then-branch) " "
+                     (rpn-of else-branch) " ?:")))
 
 (defn print-rpn
   "Challenge 5.3: render `expr` in reverse Polish notation."
