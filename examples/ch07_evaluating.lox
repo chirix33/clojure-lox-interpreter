@@ -1,0 +1,69 @@
+// Chapter 7 - Evaluating Expressions
+//
+// Chapter 7's Lox is an expression evaluator: there are no statements yet, so
+// a script is exactly ONE expression and the interpreter prints its value.
+// That means this file is a single expression, and the lines below it are
+// comments showing the other expressions worth trying.
+//
+// Run it:
+//
+//   ./scripts/lox.sh examples/ch07_evaluating.lox      ->  7
+//   ./scripts/lox.sh --ast examples/ch07_evaluating.lox    (chapter 6's tree)
+//   ./scripts/lox.sh --tokens examples/ch07_evaluating.lox (chapter 4's tokens)
+//
+// Or start the REPL and paste any line from the table below:
+//
+//   ./scripts/lox.sh
+
+1 + 2 * 3
+
+// ---------------------------------------------------------------------------
+// Arithmetic and precedence                           prints
+// ---------------------------------------------------------------------------
+//   1 + 2 * 3                                         7
+//   (1 + 2) * 3                                       9
+//   10 / 4                                            2.5
+//   10 / 5                                            2        (not "2.0")
+//   -3 * -3                                           9
+//   0.1 + 0.2                                         0.30000000000000004
+//
+// ---------------------------------------------------------------------------
+// Strings
+// ---------------------------------------------------------------------------
+//   "cr" + "aft"                                      craft
+//   "1" + "2"                                         12       (not 3)
+//
+// ---------------------------------------------------------------------------
+// Truthiness: only false and nil are falsey (7.2.4)
+// ---------------------------------------------------------------------------
+//   !true                                             false
+//   !nil                                              true
+//   !0                                                false    (0 is TRUTHY)
+//   !""                                               false    ("" is TRUTHY)
+//
+// ---------------------------------------------------------------------------
+// Comparison and equality (7.2.5)
+// ---------------------------------------------------------------------------
+//   1 < 2                                             true
+//   1 == "1"                                          false    (no coercion)
+//   nil == false                                      false
+//   (0 / 0) == (0 / 0)                                true     (see below)
+//
+// Lox numbers are doubles, so dividing by zero gives an IEEE 754 value
+// rather than an error:
+//
+//   1 / 0                                             Infinity
+//   0 / 0                                             NaN
+//
+// ...and yet NaN equals itself here, because the book's `isEqual` uses
+// Java's `equals()` rather than `==`. The book calls this out: Lox
+// deliberately does not follow IEEE on equality. Challenge 7.3 offers the
+// other treatment of a zero divisor.
+//
+// ---------------------------------------------------------------------------
+// Runtime errors (7.3) - these print to stderr and exit 70
+// ---------------------------------------------------------------------------
+//   -"muffin"              Operand must be a number.
+//   2 * (3 / -"muffin")    Operand must be a number.    (unwinds * and /)
+//   1 + nil                Operands must be two numbers or two strings.
+//   "a" < "b"              Operands must be numbers.    (challenge 7.1)

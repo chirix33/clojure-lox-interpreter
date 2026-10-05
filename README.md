@@ -15,7 +15,7 @@ A tree-walking interpreter for the **Lox** programming language, written in
 | 4  | Scanning                | ✅ complete |
 | 5  | Representing Code       | ✅ complete |
 | 6  | Parsing Expressions     | ✅ complete |
-| 7  | Evaluating Expressions  | not started |
+| 7  | Evaluating Expressions  | ✅ complete |
 | 8  | Statements and State    | not started |
 | 9  | Control Flow            | not started |
 | 10 | Functions               | not started |
@@ -39,31 +39,51 @@ the Clojure CLI installed. If you do have them, the standard commands work too.
 
 ```bash
 ./scripts/test.sh                        # run the whole unit-test suite
-./scripts/lox.sh examples/ch06_parsing.lox   # parse and print a syntax tree
+./scripts/lox.sh examples/ch07_evaluating.lox   # evaluate and print a value
 ./scripts/lox.sh                         # interactive REPL (Ctrl-D to exit)
+./scripts/lox.sh --ast examples/ch06_parsing.lox       # chapter 6 syntax tree
 ./scripts/lox.sh --tokens examples/ch04_scanning.lox   # chapter 4 token dump
 ./scripts/astdemo.sh                     # chapter 5: hand-built syntax tree
 ```
 
-As of chapter 6 the REPL parses what you type and prints the resulting syntax
-tree, so you can see precedence and associativity directly:
+As of chapter 7 the pipeline runs end to end — the REPL scans, parses and
+**evaluates** what you type, and prints the resulting value:
 
 ```
 > 1 + 2 * 3
-(+ 1.0 (* 2.0 3.0))
+7
 > (1 + 2) * 3
-(* (group (+ 1.0 2.0)) 3.0)
-> 5 - 3 - 1
-(- (- 5.0 3.0) 1.0)
+9
+> "cr" + "aft"
+craft
+> 10 / 4
+2.5
+> !nil
+true
+> 1 == "1"
+false
+> -"muffin"
+Operand must be a number.
+[line 1]
 > 1 +
 [line 1] Error at end: Expect expression.
 ```
+
+Note the last two: a runtime error and a syntax error both leave the session
+alive. Earlier stages of the pipeline stay reachable by flag, so each
+chapter's submission is still runnable on its own:
+
+| Flag | Chapter | Pipeline |
+| ---- | ------- | -------- |
+| `--tokens` | 4 | source → tokens |
+| `--ast` | 6 | source → syntax tree |
+| *(none)* | 7 | source → value |
 
 On Windows PowerShell, use the `.ps1` equivalents:
 
 ```bash
 powershell -File scripts/test.ps1
-powershell -File scripts/lox.ps1 examples/ch06_parsing.lox
+powershell -File scripts/lox.ps1 examples/ch07_evaluating.lox
 powershell -File scripts/astdemo.ps1
 ```
 
@@ -75,7 +95,7 @@ git-ignored.
 
 ```bash
 lein test
-lein run examples/ch06_parsing.lox
+lein run examples/ch07_evaluating.lox
 lein run                                 # REPL
 lein run -m lox.ast-printer              # chapter 5 demo
 lein uberjar
@@ -85,7 +105,7 @@ lein uberjar
 
 ```bash
 clojure -M:test
-clojure -M -m lox.core examples/ch06_parsing.lox
+clojure -M -m lox.core examples/ch07_evaluating.lox
 clojure -M -m lox.core                   # REPL
 clojure -M -m lox.ast-printer            # chapter 5 demo
 ```
@@ -98,7 +118,8 @@ Following the book's use of the UNIX `sysexits.h` conventions:
 | ---- | ------- |
 | 0    | success |
 | 64   | bad command line usage |
-| 65   | the source had a static (scan/parse) error |
+| 65   | the source had a static (scan/parse) error — it never ran |
+| 70   | the source ran and hit a runtime error (chapter 7) |
 
 ---
 
@@ -113,6 +134,7 @@ src/lox/
   ast.clj        Chapter 5 — the expression AST: define-ast, nodes, visitors
   ast_printer.clj Chapter 5 — AstPrinter (5.4) and the RPN printer (chal. 5.3)
   parser.clj     Chapter 6 — the recursive descent parser
+  interpreter.clj Chapter 7 — the tree-walking evaluator and runtime errors
 
 test/lox/
   test_util.clj                 shared fixtures and helpers
@@ -120,10 +142,12 @@ test/lox/
   chapter_04_scanning_test.clj  Chapter 4 tests
   chapter_05_ast_test.clj       Chapter 5 tests
   chapter_06_parsing_test.clj   Chapter 6 tests
+  chapter_07_evaluating_test.clj Chapter 7 tests
 
 examples/
   ch04_scanning.lox             sample input exercising the lexical grammar
   ch06_parsing.lox              one expression exercising every precedence level
+  ch07_evaluating.lox           one expression to evaluate, plus a tour in comments
 
 scripts/
   bootstrap.{sh,ps1}  fetch the Clojure jars into lib/
@@ -134,6 +158,7 @@ scripts/
 docs/
   chapter05-challenges.md   written answers to challenges 5.1 and 5.2
   chapter06-challenges.md   challenges 6.1-6.3: grammars, design notes, switches
+  chapter07-challenges.md   challenges 7.1-7.3: comparisons, string +, divide by zero
 ```
 
 Every source file carries a header comment naming the chapter it comes from
@@ -283,6 +308,61 @@ and it is unit-tested directly - including the property that makes it safe to
 call in a loop: it always consumes at least one token, so a caller can never
 spin forever on a bad one.
 
+### Chapter 7 - Evaluating Expressions
+
+**The interpreter is a visitor map, exactly like the AST printer.** The book
+writes `class Interpreter implements Expr.Visitor<Object>`, and notes that the
+AST printer "is almost exactly what a real interpreter does, except instead of
+concatenating strings, it computes values". Chapter 5 here had already reduced
+`Expr.Visitor<R>` to a map from node type to function, so that observation
+becomes literal: `lox.interpreter/interpreter` and
+`lox.ast-printer/printer` are the same `defvisitor` form with different return
+values. `defvisitor` still refuses to compile a visitor that misses a node
+type, which is the guarantee the Java interface was there to provide.
+
+**There is no interpreter object yet.** Chapter 7's evaluation is a pure
+function of the tree, so `evaluate` takes a node and returns a value. The book
+makes `Lox.interpreter` a static field anyway, and says why: global variables
+have to survive between REPL lines. That is chapter 8's `Environment`, and
+`evaluate` will take it as a parameter when it exists.
+
+**The value representation is the one place Clojure buys nothing.** Both
+languages run on the JVM, so "a Lox value" is the same set of objects in each:
+`nil`, `Boolean`, `Double`, `String`. The predicates are named
+(`lox-number?` and friends) but they are just the book's `instanceof` checks.
+Note that `lox-number?` is deliberately *not* Clojure's `number?` — Lox has
+exactly one numeric type, and a `Long` reaching the evaluator is a bug in
+whoever built the node.
+
+**Two places where the obvious Clojure translation is wrong.** Both were found
+by tests, both are now pinned by tests, and both come from the same root cause:
+Clojure's numeric tower is not Java's `double`.
+
+* `(/ 1.0 0.0)` is `Infinity`, but `(/ boxed-one boxed-zero)` **throws**
+  `ArithmeticException`. Clojure's `/` on boxed `Double` objects routes through
+  `clojure.lang.Numbers`, which rejects a zero divisor; on primitive doubles it
+  compiles to the JVM's division and yields the IEEE infinity the book expects.
+  The interpreter's values are always boxed, so the book's `(double)left /
+  (double)right` casts have to be written out rather than dropped.
+* Clojure's `compare` on two `Double`s uses `Double.compareTo`, which totally
+  orders `NaN` above everything — so a `compare`-based `>` would make
+  `NaN > 1` **true**. The book compares primitive doubles, where every NaN
+  comparison is false, so `eval-comparison` uses `>` / `<` directly.
+
+The irony is that `isEqual` needs the *opposite* choice: there the book calls
+`.equals`, so `NaN == NaN` is true and `-0.0 == 0.0` is false — the reverse of
+both IEEE and Clojure's `=`. The book flags this ("Lox uses the latter, so
+doesn't follow IEEE") and this implementation matches it rather than
+"improving" it, because two Lox implementations disagreeing about
+`(0/0) == (0/0)` is the exact failure the chapter warns about.
+
+**Unreachable code throws instead of returning nil.** The book's `switch`
+statements fall out of the bottom with `// Unreachable.` and `return null`. An
+unreachable branch that silently produces a value is a trap: if the parser ever
+hands the interpreter an operator it has no rule for, the result is a stray nil
+flowing onward instead of a diagnosis. Both `eval-binary` and `eval-unary`
+raise a Lox runtime error there instead, and it is tested.
+
 ## Deviations from the book
 
 I added one deliberate addition, from the chapter's own challenge list:
@@ -340,6 +420,34 @@ Chapter 6's challenges (full write-up in `docs/chapter06-challenges.md`):
   than a cascade. `-` is excluded from the check, since a leading `-` is a
   legal unary operator rather than a mistake.
 
+Chapter 7's challenges (full write-up in `docs/chapter07-challenges.md`):
+
+* **Challenge 7.1 - comparisons on other types.** Implemented for *two
+  strings*, ordered by `String.compareTo`, behind
+  `lox.interpreter/*compare-strings?*`. Mixed pairs like the challenge's
+  `3 < "pancake"` stay a runtime error: any ordering for them would be
+  invented, and the languages that guessed have since changed their minds
+  (Python 2 compared mixed types by type *name* and Python 3 made it a
+  `TypeError`; JavaScript coerces, which makes its `<` not even a total order).
+  The error message widens with the switch so it never misstates the rule.
+* **Challenge 7.2 - string-coercing `+`.** Implemented behind
+  `lox.interpreter/*string-coercing-plus?*`, so `"scone" + 4` is `"scone4"`.
+  It is checked *after* the book's two cases, so only pairs that were already
+  runtime errors can change meaning, and it converts with `stringify` rather
+  than the host's `str` — otherwise a Lox number would concatenate as
+  `"scone4.0"`.
+* **Challenge 7.3 - division by zero.** Implemented behind
+  `lox.interpreter/*error-on-division-by-zero?*`. The written half of the
+  challenge is answered in the doc, with a comparison table across six
+  languages; the short version is that a silent `NaN` is exactly the failure
+  mode section 7.3 argues against, and Lox cannot even test for `NaN` (it has
+  no `isnan`, and `NaN == NaN` is true here).
+
+All three are **off** by default, for the reason the book repeats throughout
+this chapter: each changes the meaning of programs that are *already valid*, so
+switching one on by default would make this interpreter quietly disagree with
+every other Lox. Each is exercised by the tests in both positions.
+
 One further deviation, not from a challenge: **`parse` reports leftover
 tokens.** The book's chapter 6 `parse()` parses one expression and returns,
 silently ignoring anything after it - so `1, 2` would quietly parse as `1` with
@@ -347,15 +455,19 @@ no indication that half the input went unread. The hole closes on its own in
 chapter 8, where `parse` loops until `:eof`; until then it is closed explicitly
 with "Expect end of expression."
 
-And one small addition for the sake of the earlier submission: `run` now parses
-and prints a tree, as section 6.4 says, but chapter 4's token dump is still
-reachable as `lox.core --tokens <script>` rather than being deleted, so the
-chapter 4 example stays runnable.
+And one standing addition for the sake of the earlier submissions: the book
+deletes each chapter's temporary output when the next chapter replaces it,
+whereas here every stage stays reachable by flag. `run` evaluates, as section
+7.4 says, while `--ast` still prints chapter 6's syntax tree and `--tokens`
+still dumps chapter 4's tokens. Each chapter is a graded submission of its own,
+and its example script should stay runnable.
 
 The AST printer's numbers deserve a note: it prints what is in the tree, so a
 `NUMBER` token scanned from the source `123` shows as `123.0`. Trimming that
-trailing `.0` is chapter 7's `stringify`, not the printer's job - the printer
-exists to show the tree exactly as it is.
+trailing `.0` is `lox.interpreter/stringify`'s job as of chapter 7, not the
+printer's - the printer exists to show the tree exactly as it is. The two
+coexist deliberately, and a test asserts the difference: `1` parses to `1.0`
+and evaluates to `1`.
 
 Everything else matches the book, including the intentional edge cases:
 `.5` scans as `DOT` then `NUMBER`, `5.` scans as `NUMBER` then `DOT`, `-123` is
@@ -366,8 +478,22 @@ sequences (so `"a\nb"` is six characters, backslash included).
 
 ## Testing
 
-`./scripts/test.sh` runs the whole suite: **55 test cases / 339 assertions**
-across chapters 4 and 5.
+`./scripts/test.sh` runs the whole suite: **174 test cases / 1,167
+assertions** across chapters 4 to 7.
+
+| Chapter | Test cases | Assertions |
+| ------- | ---------- | ---------- |
+| 4 — Scanning | 23 | 137 |
+| 5 — Representing Code | 32 | 206 |
+| 6 — Parsing Expressions | 83 | 335 |
+| 7 — Evaluating Expressions | 36 | 489 |
+| **total** | **174** | **1,167** |
+
+A single chapter can be run on its own:
+
+```bash
+./scripts/test.sh lox.chapter-07-evaluating-test
+```
 
 ### Chapter 4 - 23 test cases / 137 assertions
 
@@ -389,7 +515,7 @@ Covering:
 * line-number tracking across newlines, strings and block comments
 * a whole-program smoke test over a realistic Lox source file
 
-### Chapter 5 - 32 test cases / 202 assertions
+### Chapter 5 - 32 test cases / 206 assertions
 
 Covering:
 
@@ -492,6 +618,84 @@ Covering:
   cannot be changed apart
 * **chapters 5 and 6 together** - that the tree chapter 5 had to hand-build is
   now derived from the source text `-123 * (45.67)`
+
+### Chapter 7 - 36 test cases / 489 assertions
+
+Covering:
+
+* **the value representation of section 7.1** - that each of the four Lox
+  types is recognised, that nothing else counts as a Lox value, and
+  specifically that a Lox number is a `Double` and a Clojure `Long`, `Float`,
+  `BigDecimal` or ratio is *not* one; plus that the scanner already produced
+  the value the evaluator hands back, so a literal needs no conversion
+* **every node type** - literals (all six forms), grouping and 4-deep nesting,
+  both unary operators, all ten binary operators, and the ternary; driven in
+  part off `ast/expr-node-types`, so a node type added later cannot slip
+  through unevaluated
+* **arithmetic** - precedence and associativity through the evaluator rather
+  than the printer (`1 + 2 * 3` is 7, `(1 + 2) * 3` is 9, `10 - 5 - 2` is 3),
+  double division (`1 / 2` is `0.5`, not 0), and IEEE rounding
+  (`0.1 + 0.2` is `0.30000000000000004`)
+* **truthiness (7.2.4)** - that only `false` and `nil` are falsey, asserted
+  against the four languages the book contrasts: `0` is truthy here but falsey
+  in C and Python, `""` is truthy here but falsey in JS and Python, and `"0"`
+  is truthy here but falsey in PHP
+* **equality (7.2.5)** - like types, every mixed pair being unequal *without*
+  erroring (which is what distinguishes `==` from `<`), nil handling with no
+  NullPointerException, and reflexivity and symmetry checked over a 9-value
+  cross product
+* **the `equals`-versus-`==` corner the book flags** - that `NaN == NaN` is
+  **true** and `-0.0 == 0.0` is **false**, because `isEqual` uses `.equals`;
+  and that both are the opposite of Clojure's own `=`, so the implementation
+  provably cannot just delegate to it
+* **IEEE ordering** - that every comparison involving NaN is false, including
+  `NaN <= NaN`, and that `-0.0` compares *equal* to `0.0`. These are the
+  mirror image of the equality cases above, and they are what catch the
+  tempting `compare`-based implementation: `Double.compareTo` orders NaN above
+  everything, so it would make `NaN > 1` true
+* **evaluation order** - a tracing harness that records each node as it
+  finishes, proving the traversal is post-order and left-to-right at every
+  level (`1 + 2 * 3` traces `1, 2, 3, binary, binary`); plus the book's two
+  semantic commitments checked independently through runtime errors as
+  observable effects: the *left* operand's error is the one reported, and
+  *both* operands are evaluated before either is type-checked
+* **`stringify` (7.4)** - `nil`; the `.0` trimming for integer-valued doubles
+  (`1.0` → `1`, and `-0.0` → `-0`); fractions preserved; `Infinity`,
+  `-Infinity` and `NaN`; and that it deliberately differs from chapter 5's
+  `literal->string`, which keeps the `.0` because it shows the tree
+* **runtime errors (7.3)** - all three of the chapter's messages across 24
+  operand combinations; the reported line taken from the *operator* token
+  (checked with the operator on lines 1, 2 and 3); the error tagged `:runtime`
+  rather than `:static`, and a parse error tagged the other way round and never
+  reaching the interpreter; the book's `2 * (3 / -"muffin")` unwinding all
+  three operators to produce exactly *one* error; the same through 40 levels of
+  nesting; and that no host `ClassCastException` or `NullPointerException` ever
+  escapes
+* **the wiring of section 7.4** - that `interpret` prints the stringified value
+  and prints *nothing* when evaluation fails; that `lox.core/run` now evaluates
+  while chapters 4 and 6 stay reachable by flag; and the exit codes 0, 65 and
+  70 driven through the real `run-file` over a temp file, including that a
+  static error wins over a runtime one because nothing ran
+* **the REPL surviving errors** - a driven session asserting that a runtime
+  error, and then a syntax error, each leave the session alive and the next
+  line working, with no error state leaking between lines
+* **unreachable operators** - that an operator the evaluator has no rule for is
+  *reported*, not silently turned into nil as the book's `// Unreachable.`
+  `switch` would
+* **depth** - 101 nested `!`, 100 nested groupings and a 100-operator chain,
+  evaluating correctly without overflowing
+* **the challenges** - string ordering with mixed types still refused and the
+  error message tracking the widened rule; string-coercing `+` in both operand
+  orders, across all four value types, converting via `stringify` so no stray
+  `.0` appears, leaving the book's two cases untouched, and its
+  non-associativity (`"a" + 1 + 2` vs `"a" + (1 + 2)`); divide-by-zero errors
+  including `-0.0`, reported at the `/` token's line; and each challenge
+  asserted *inert* while its switch is off
+* **chapter 6's challenge nodes, now evaluable** - the ternary choosing a
+  branch by truthiness, chaining right-associatively, and provably **not**
+  evaluating the untaken branch (`true ? "safe" : -nil` succeeds, and the trace
+  shows only two operands); the comma operator discarding its left operand
+  while still evaluating it
 
 Run a single namespace with:
 

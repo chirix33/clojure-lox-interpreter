@@ -714,11 +714,16 @@
   (is (nil? (parser/parse-source "1 +"))))
 
 (deftest run-prints-the-syntax-tree
-  (testing "book: replace the token dump with the AST printer's output"
-    (let [[_ out] (u/capture-out #(require 'lox.core))]
-      (let [core-run (resolve 'lox.core/run)
-            [_ lines] (u/capture-out #(core-run "1 + 2 * 3"))]
-        (is (= ["(+ 1.0 (* 2.0 3.0))"] lines))))))
+  (testing "book: replace the token dump with the AST printer's output.
+
+           Chapter 7 moved this out of `lox.core/run`, which now evaluates,
+           and into `lox.core/print-ast` behind the `--ast` flag - the book
+           simply deletes it, but each chapter here stays runnable. The
+           behaviour asserted is chapter 6's either way."
+    (require 'lox.core)
+    (let [print-ast (resolve 'lox.core/print-ast)
+          [_ lines] (u/capture-out #(print-ast "1 + 2 * 3"))]
+      (is (= ["(+ 1.0 (* 2.0 3.0))"] lines)))))
 
 (deftest run-prints-nothing-when-there-was-a-syntax-error
   (testing "book: 'Stop if there was a syntax error.'"
