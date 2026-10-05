@@ -14,14 +14,16 @@
             [lox.chapter-04-scanning-test]
             [lox.chapter-05-ast-test]
             [lox.chapter-06-parsing-test]
-            [lox.chapter-07-evaluating-test]))
+            [lox.chapter-07-evaluating-test]
+            [lox.chapter-08-statements-test]))
 
 (def chapter-namespaces
   "Chapter test namespaces, in book order."
   ['lox.chapter-04-scanning-test
    'lox.chapter-05-ast-test
    'lox.chapter-06-parsing-test
-   'lox.chapter-07-evaluating-test])
+   'lox.chapter-07-evaluating-test
+   'lox.chapter-08-statements-test])
 
 (defn -main
   "Run every chapter's tests (or just the namespaces named on the command

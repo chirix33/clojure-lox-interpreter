@@ -1,0 +1,78 @@
+// =============================================================================
+// Chapter 8 - Statements and State
+//
+//   clox examples/ch08_statements.lox
+//
+// Every example in the chapter, in the order the chapter introduces it. The
+// expected output is in the comment beside each statement; the chapter 8 unit
+// tests assert on the whole list, so this file is checked, not just claimed.
+// =============================================================================
+
+// -- 8.1 Statements ----------------------------------------------------------
+// The chapter's first runnable program: "It almost looks like a real program!"
+
+print "one";                      // one
+print true;                       // true
+print 2 + 1;                      // 3
+
+// An expression statement evaluates and discards. Nothing is printed here -
+// that is the whole difference between `;` and `print`.
+2 + 1;
+
+// -- 8.2 Global variables ----------------------------------------------------
+
+var beverage = "espresso";
+print beverage;                   // espresso
+
+// A `var` statement may also *re*define a name. Kept legal so that scripts and
+// the REPL obey one rule; the book cites Scheme.
+var a = "before";
+print a;                          // before
+var a = "after";
+print a;                          // after
+
+// 8.3.1: a declaration with no initializer binds nil.
+var uninitialized;
+print uninitialized;              // nil
+
+// -- 8.4 Assignment ----------------------------------------------------------
+
+var x = 1;
+x = 3;
+print x;                          // 3
+
+// Assignment is an *expression*, so it has a value and can be nested.
+print x = 2;                      // 2
+
+// -- 8.5 Scope ---------------------------------------------------------------
+// The program the chapter closes with: three scopes, two shadowed names, one
+// name visible from all three.
+
+var outer_a = "global a";
+var outer_b = "global b";
+var outer_c = "global c";
+{
+  var outer_a = "outer a";
+  var outer_b = "outer b";
+  {
+    var outer_a = "inner a";
+    print outer_a;                // inner a
+    print outer_b;                // outer b
+    print outer_c;                // global c
+  }
+  print outer_a;                  // outer a
+  print outer_b;                  // outer b
+  print outer_c;                  // global c
+}
+print outer_a;                    // global a
+print outer_b;                    // global b
+print outer_c;                    // global c
+
+// 8.5.1's cuboid example: a local declaration shadows, it does not clobber.
+var volume = 11;
+volume = 0;
+{
+  var volume = 3 * 4 * 5;
+  print volume;                   // 60
+}
+print volume;                     // 0

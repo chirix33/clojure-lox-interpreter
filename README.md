@@ -8,7 +8,7 @@ A tree-walking interpreter for the **Lox** programming language, written in
 
 [Crafting Interpreters]: https://craftinginterpreters.com/
 
-**Current state: Chapter 6 — Parsing Expressions.**
+**Current state: Chapter 8 — Statements and State.**
 
 | Chapter | Topic | Status |
 | ------- | ----- | ------ |
@@ -16,7 +16,7 @@ A tree-walking interpreter for the **Lox** programming language, written in
 | 5  | Representing Code       | ✅ complete |
 | 6  | Parsing Expressions     | ✅ complete |
 | 7  | Evaluating Expressions  | ✅ complete |
-| 8  | Statements and State    | not started |
+| 8  | Statements and State    | ✅ complete |
 | 9  | Control Flow            | not started |
 | 10 | Functions               | not started |
 | 11 | Resolving and Binding   | not started |
@@ -39,51 +39,67 @@ the Clojure CLI installed. If you do have them, the standard commands work too.
 
 ```bash
 ./scripts/test.sh                        # run the whole unit-test suite
-./scripts/lox.sh examples/ch07_evaluating.lox   # evaluate and print a value
+./scripts/lox.sh examples/ch08_statements.lox   # run a Lox program
 ./scripts/lox.sh                         # interactive REPL (Ctrl-D to exit)
-./scripts/lox.sh --ast examples/ch06_parsing.lox       # chapter 6 syntax tree
+./scripts/lox.sh --ast examples/ch08_statements.lox    # chapter 8 syntax trees
+./scripts/lox.sh --expression examples/ch07_evaluating.lox      # chapter 7 value
+./scripts/lox.sh --ast-expression examples/ch06_parsing.lox     # chapter 6 tree
 ./scripts/lox.sh --tokens examples/ch04_scanning.lox   # chapter 4 token dump
 ./scripts/astdemo.sh                     # chapter 5: hand-built syntax tree
 ```
 
-As of chapter 7 the pipeline runs end to end — the REPL scans, parses and
-**evaluates** what you type, and prints the resulting value:
+As of chapter 8 the language is a language: a script is a list of statements,
+names can be bound and rebound, and `{ }` opens a scope.
 
 ```
-> 1 + 2 * 3
-7
-> (1 + 2) * 3
-9
-> "cr" + "aft"
-craft
-> 10 / 4
-2.5
-> !nil
-true
-> 1 == "1"
-false
-> -"muffin"
-Operand must be a number.
+> var beverage = "espresso";
+> print beverage;
+espresso
+> var a = 1;
+> a = a + 2
+3
+> { var a = "shadowed"; print a; }
+shadowed
+> print a;
+3
+> 1 + 2
+3
+> 1 + 2;
+> b
+Undefined variable 'b'.
 [line 1]
-> 1 +
-[line 1] Error at end: Expect expression.
+> print 1
+[line 1] Error at end: Expect ';' after value.
 ```
 
-Note the last two: a runtime error and a syntax error both leave the session
-alive. Earlier stages of the pipeline stay reachable by flag, so each
-chapter's submission is still runnable on its own:
+Three things in that session are worth pointing out.
+
+* `a = a + 2` printed its value and `1 + 2;` did not. A bare *expression* at
+  the prompt is evaluated and displayed (challenge 8.1); an expression
+  *statement* evaluates its expression and discards the value, which is what an
+  expression statement is for. The semicolon is not noise.
+* `b` failed at **run time**, not parse time, and the session survived — as it
+  does after a syntax error. Deferring undefined-variable errors to runtime is
+  a deliberate choice of the chapter's (section 8.3): it is what will make
+  mutually recursive functions writable in chapter 10.
+* The inner `a` shadowed the outer one and then vanished with its block.
+
+Earlier stages of the pipeline stay reachable by flag, so each chapter's
+submission is still runnable on its own:
 
 | Flag | Chapter | Pipeline |
 | ---- | ------- | -------- |
 | `--tokens` | 4 | source → tokens |
-| `--ast` | 6 | source → syntax tree |
-| *(none)* | 7 | source → value |
+| `--ast-expression` | 6 | source → one expression's syntax tree |
+| `--expression` | 7 | source → one expression's value |
+| `--ast` | 8 | source → a program's syntax trees, one per line |
+| *(none)* | 8 | source → run it |
 
 On Windows PowerShell, use the `.ps1` equivalents:
 
 ```bash
 powershell -File scripts/test.ps1
-powershell -File scripts/lox.ps1 examples/ch07_evaluating.lox
+powershell -File scripts/lox.ps1 examples/ch08_statements.lox
 powershell -File scripts/astdemo.ps1
 ```
 
@@ -95,7 +111,7 @@ git-ignored.
 
 ```bash
 lein test
-lein run examples/ch07_evaluating.lox
+lein run examples/ch08_statements.lox
 lein run                                 # REPL
 lein run -m lox.ast-printer              # chapter 5 demo
 lein uberjar
@@ -105,7 +121,7 @@ lein uberjar
 
 ```bash
 clojure -M:test
-clojure -M -m lox.core examples/ch07_evaluating.lox
+clojure -M -m lox.core examples/ch08_statements.lox
 clojure -M -m lox.core                   # REPL
 clojure -M -m lox.ast-printer            # chapter 5 demo
 ```
@@ -135,6 +151,8 @@ src/lox/
   ast_printer.clj Chapter 5 — AstPrinter (5.4) and the RPN printer (chal. 5.3)
   parser.clj     Chapter 6 — the recursive descent parser
   interpreter.clj Chapter 7 — the tree-walking evaluator and runtime errors
+                 Chapter 8 — statements, and the current environment
+  environment.clj Chapter 8 — the scope chain: define / get / assign
 
 test/lox/
   test_util.clj                 shared fixtures and helpers
@@ -143,11 +161,13 @@ test/lox/
   chapter_05_ast_test.clj       Chapter 5 tests
   chapter_06_parsing_test.clj   Chapter 6 tests
   chapter_07_evaluating_test.clj Chapter 7 tests
+  chapter_08_statements_test.clj Chapter 8 tests
 
 examples/
   ch04_scanning.lox             sample input exercising the lexical grammar
   ch06_parsing.lox              one expression exercising every precedence level
   ch07_evaluating.lox           one expression to evaluate, plus a tour in comments
+  ch08_statements.lox           every example from chapter 8, with expected output
 
 scripts/
   bootstrap.{sh,ps1}  fetch the Clojure jars into lib/
@@ -159,6 +179,7 @@ docs/
   chapter05-challenges.md   written answers to challenges 5.1 and 5.2
   chapter06-challenges.md   challenges 6.1-6.3: grammars, design notes, switches
   chapter07-challenges.md   challenges 7.1-7.3: comparisons, string +, divide by zero
+  chapter08-challenges.md   challenges 8.1-8.3: the REPL, uninitialized vars, shadowing
 ```
 
 Every source file carries a header comment naming the chapter it comes from
@@ -363,6 +384,111 @@ hands the interpreter an operator it has no rule for, the result is a stray nil
 flowing onward instead of a diagnosis. Both `eval-binary` and `eval-unary`
 raise a Lox runtime error there instead, and it is tested.
 
+### Chapter 8 - Statements and State
+
+**A second node family, from one more `define-ast` call.** Section 8.1.1 adds
+`Stmt` alongside `Expr` and makes the point that the two are *disjoint* -
+nowhere does the grammar accept either one - so the book gives them unrelated
+Java class hierarchies and lets `javac` catch "passing a statement to a Java
+method that expects an expression". The statement grammar here is one more
+call:
+
+```clojure
+(define-ast stmt
+  {:block      [[:stmts statements]]
+   :expression [[:expr expression]]
+   :print      [[:expr expression]]
+   :var        [[:token name] [:expr-or-nil initializer]]}
+  {:suffix "-stmt"})
+```
+
+Three supporting changes were needed, and each was a place where chapter 5 had
+assumed there would only ever be one family: a registry so `fields-of`,
+`children` and `accept` can ask which grammar a node came from; an optional
+family argument to `defvisitor`, so completeness is checked against the right
+field table (the book's reason for needing a second `Stmt.Visitor<Void>`
+interface at all); and three new field kinds, `:stmt`, `:stmts` and
+`:expr-or-nil`. The disjointness itself is enforced by `check-field!`: handing
+a statement to an `:expr` field throws where the node is *built*, which is the
+same error at the same point in the pipeline that `javac` would have given.
+
+The `:suffix "-stmt"` is not cosmetic. Three of the book's `Stmt` subclasses
+are `Expression`, `Print` and `Var`, and `print`, `var` and `var?` are all
+taken in Clojure - `clojure.core/print`, the `var` **special form**, and
+`clojure.core/var?`. `(ast/var-stmt name init)` also reads better than
+`(ast/var ...)` would at the call sites.
+
+**`:expression` and `:print` stay two node types even though their shapes are
+identical.** Both are a single `Expr expression`; one node with a flag would be
+smaller. It would also push the dispatch into an `if` inside a visit method,
+which is the thing the Visitor pattern exists to avoid: the two differ in
+nothing but *behaviour*, and behaviour is what the visitor dispatches on.
+
+**An absent initializer is a missing node, not a node holding nil.** `var a;`
+stores a literal nil in the `initializer` field, while `var a = nil;` stores an
+`(ast/literal nil)`. The two print differently - `(var a)` versus
+`(var a nil)` - and keeping them distinct is what makes both section 8.3.1's
+rule ("Lox sets a variable to nil if it isn't explicitly initialized") and
+challenge 8.2's opposite rule implementable from the same tree. Normalising
+`var a;` into `var a = nil;` in the parser would have looked like a
+simplification and quietly closed that door.
+
+**The environment is mutable state, deliberately, and it is the first thing in
+this project that is.** The scanner threads a cursor, the parser threads a
+cursor, chapter 7's `evaluate` is a pure function of a tree. An environment is
+`{:values <atom> :enclosing <env-or-nil>}`, and the atom is not a shortcut:
+
+* `lox.ast/accept` hands a visit function exactly one argument, the node, so
+  the environment has to be ambient rather than threaded. (Threading it would
+  mean every visit function returns `[env value]` - a noisier interpreter than
+  the book's, for no gain in this chapter.)
+* From chapter 10, **aliasing is the semantics**. A closure captures the
+  environment it was defined in, and an assignment made later through any other
+  reference to that scope has to be visible through the closure, or
+  `makeCounter()` does not work. That is shared mutable *identity*, required by
+  the language and not by the implementation.
+* The REPL needs globals to outlive one line of input, which is the book's
+  stated reason for making `Lox.interpreter` a static field.
+
+Clojure's answer to "mutable state that several references share" is a
+reference type around an immutable value, so that is what `:values` is. The
+chain itself is immutable (`:enclosing` is a plain reference; the book marks it
+`final` for the same reason), and `binding-map` hands out a consistent snapshot
+that the tests assert on.
+
+**`executeBlock`'s save/try/finally/restore is `binding`.** The book stores the
+current scope in a mutable field, swaps it around a block, and restores it in a
+`finally` - and its own margin note calls that inelegant. `binding` *is* that
+dance, including the part the book is careful to point out: a runtime error
+unwinding out of a block still leaves the enclosing scope current on the way
+out. There is a test for exactly that, because "it works because `binding`
+does the right thing" is a claim and not a proof.
+
+**The scope-chain walk is named once.** The book inlines two nearly identical
+recursions, one in `get` and one in `assign`. `resolve-environment` is that walk
+as a function, so look-up and assignment cannot disagree about *which* binding
+they found - the property that makes `var a = 1; { a = 2; } print a;` print 2
+rather than silently creating a local. It is also exactly the walk chapter 11's
+resolver will replace, so it is useful to have in one place.
+
+**Panic mode finally gets used.** `synchronize` has been in `parser.clj`,
+unused and unit-tested, since chapter 6. `parse-declaration` is the statement
+boundary the book promised it, so from this chapter a syntax error costs one
+statement rather than the whole file. One difference: a failed declaration
+contributes **nothing** to the statement list, where the book appends a Java
+null. The book's null is harmless only because `hadError` guarantees the list is
+never executed; here an `:stmts` field is checked at construction, so a null
+inside a block would surface at the wrong place entirely.
+
+**Two entry points were renamed rather than deleted.** The book replaces
+chapter 6's `parse()` and chapter 7's `interpret()` outright. Here they survive
+as `parse-one-expression` and `interpret-expression`, for two reasons. Each
+earlier chapter is a graded submission whose example script must stay runnable
+(hence `--ast-expression` and `--expression`). And challenge 8.1 needs both of
+them: "does this whole line parse as one expression?" is what classifies REPL
+input, and "evaluate one expression and display the value" is what no statement
+does any more.
+
 ## Deviations from the book
 
 I added one deliberate addition, from the chapter's own challenge list:
@@ -448,19 +574,69 @@ this chapter: each changes the meaning of programs that are *already valid*, so
 switching one on by default would make this interpreter quietly disagree with
 every other Lox. Each is exercised by the tests in both positions.
 
+Chapter 8's challenges (full write-up in `docs/chapter08-challenges.md`):
+
+* **Challenge 8.1 - a REPL that accepts statements *or* expressions** is
+  implemented, and is the **first challenge here that is on by default**
+  (`lox.core/*repl-echoes-expressions?*`). The earlier switches default off on
+  a principle - each changed the meaning of already-valid programs - and this
+  one changes nothing about the language at all: `run` is untouched, a script
+  behaves identically, and the only difference is whether the *prompt* answers
+  `1 + 2` with `3` or with a syntax error. The book's own framing ("That's a
+  drag") treats the regression as an accident of implementation order.
+
+  The interesting half is classification, not printing, and it cannot be done
+  by peeking at the first token: `a` begins an expression (`a + 1`) and equally
+  begins a statement (`a = 1;`), and the deciding token may be the last one on
+  the line. What settles it is a question chapter 6's entry point already
+  answers - *does the whole line parse as one expression?* - so `parse-repl`
+  tries that and falls back to the statement parse.
+
+  Speculative parsing turned out to need two kinds of rollback, not one. The
+  recorded error state is restored (`lox.errors/error-state` /
+  `restore-error-state!`), **and** printing is suppressed for the duration of
+  the attempt. Without the second, a rolled-back error has still been written
+  to stderr and still been read: typing `var a = 1;` printed
+  "Error at 'var': Expect expression." above a perfectly successful
+  declaration. A unit test asserting on `error-messages` passed either way,
+  which is the lesson - it was checking the claim that was easy to check
+  rather than the one that mattered. The suite now captures stderr too
+  (`lox.test-util/capture-err`).
+
+* **Challenge 8.2 - uninitialized variables are an error** is implemented
+  behind `lox.environment/*error-on-uninitialized?*`, **off** by default
+  because section 8.3.1 settles on the nil rule and clox implements it. A `var`
+  with no initializer binds an unforgeable sentinel (a namespaced keyword, for
+  which `lox-value?` is false, so no program can produce one), and reading it
+  reports "Variable 'a' is not initialized." - a distinct message from
+  "Undefined variable 'a'.", because declared-but-unset and never-declared are
+  different mistakes.
+
+* **Challenge 8.3 - `var a = a + 2;` inside a block** is a written answer, in
+  the doc, plus tests pinning down what this implementation actually does. It
+  prints **3**: the initializer is evaluated before the binding is defined, so
+  look-up walks out to the enclosing `a`. jlox agrees, which is why no
+  behaviour was changed - but the doc argues the answer is wrong, compares six
+  languages (Java, JS, Python and Rust all reject or redefine it), and notes
+  that chapter 11 turns it into the static error "Can't read local variable in
+  its own initializer." Recording the current answer in tests means that change
+  will show up as a test diff rather than a surprise.
+
 One further deviation, not from a challenge: **`parse` reports leftover
 tokens.** The book's chapter 6 `parse()` parses one expression and returns,
 silently ignoring anything after it - so `1, 2` would quietly parse as `1` with
-no indication that half the input went unread. The hole closes on its own in
-chapter 8, where `parse` loops until `:eof`; until then it is closed explicitly
-with "Expect end of expression."
+no indication that half the input went unread. In chapter 8 the hole closes on
+its own, because `parse` loops until `:eof`; the explicit "Expect end of
+expression." check now lives only in `parse-one-expression`, where it has
+become load-bearing for a different reason (see challenge 8.1).
 
 And one standing addition for the sake of the earlier submissions: the book
 deletes each chapter's temporary output when the next chapter replaces it,
-whereas here every stage stays reachable by flag. `run` evaluates, as section
-7.4 says, while `--ast` still prints chapter 6's syntax tree and `--tokens`
-still dumps chapter 4's tokens. Each chapter is a graded submission of its own,
-and its example script should stay runnable.
+whereas here every stage stays reachable by flag. `run` runs a program, as
+section 8.1.3 says, while `--expression` still evaluates one chapter 7
+expression, `--ast-expression` still prints one chapter 6 syntax tree, and
+`--tokens` still dumps chapter 4's tokens. Each chapter is a graded submission
+of its own, and its example script should stay runnable.
 
 The AST printer's numbers deserve a note: it prints what is in the tree, so a
 `NUMBER` token scanned from the source `123` shows as `123.0`. Trimming that
@@ -478,21 +654,22 @@ sequences (so `"a\nb"` is six characters, backslash included).
 
 ## Testing
 
-`./scripts/test.sh` runs the whole suite: **174 test cases / 1,167
-assertions** across chapters 4 to 7.
+`./scripts/test.sh` runs the whole suite: **212 test cases / 1,550
+assertions** across chapters 4 to 8.
 
 | Chapter | Test cases | Assertions |
 | ------- | ---------- | ---------- |
 | 4 — Scanning | 23 | 137 |
-| 5 — Representing Code | 32 | 206 |
+| 5 — Representing Code | 32 | 209 |
 | 6 — Parsing Expressions | 83 | 335 |
 | 7 — Evaluating Expressions | 36 | 489 |
-| **total** | **174** | **1,167** |
+| 8 — Statements and State | 38 | 380 |
+| **total** | **212** | **1,550** |
 
 A single chapter can be run on its own:
 
 ```bash
-./scripts/test.sh lox.chapter-07-evaluating-test
+./scripts/test.sh lox.chapter-08-statements-test
 ```
 
 ### Chapter 4 - 23 test cases / 137 assertions
@@ -703,7 +880,114 @@ Run a single namespace with:
 ./scripts/test.sh lox.chapter-04-scanning-test
 ./scripts/test.sh lox.chapter-05-ast-test
 ./scripts/test.sh lox.chapter-06-parsing-test
+./scripts/test.sh lox.chapter-07-evaluating-test
+./scripts/test.sh lox.chapter-08-statements-test
 ```
+
+### Chapter 8 - 38 test cases / 380 assertions
+
+From chapter 8 a Lox program's observable behaviour *is* the lines it printed,
+so most of these assertions run a program and compare its output -
+`(is (= ["3"] (run-program "print 1 + 2;")))` - which states the parse, the
+evaluation, the statement semantics and `stringify`'s rules together, in the
+only terms a Lox user can see. Covering:
+
+* **the statement family (8.1.1)** - the four productions against the book's
+  `defineAst` descriptions field by field; that `expr` and `stmt` node types
+  are disjoint; and that the disjointness is *enforced* - a statement handed to
+  an `:expr` field and an expression handed to `:stmts` both throw at
+  construction, which is the mistake section 8.1.1 says `javac` catches for the
+  book
+* **`:expr-or-nil`** - that `var a;` and `var a = nil;` parse to visibly
+  different trees (`(var a)` versus `(var a nil)`), and that the field accepts a
+  node or nothing and rejects a bare value
+* **print and expression statements (8.1.2, 8.1.3)** - the chapter's first
+  program (`one / true / 3`); `print` using section 7.4's `stringify` and not
+  the AST printer's rules, over nine value forms; an expression statement
+  printing *nothing* while its side effect still happens; and the two
+  near-identical missing-semicolon messages asserted separately, since
+  swapping them would be an easy and invisible bug
+* **the program rule** - that `parse` returns a *sequence*, never nil, and that
+  an empty source and a comment-only source are both valid programs
+* **execution order and failure** - statements running in order, and a runtime
+  error aborting the **program** rather than its own statement
+  (`print "one"; print 1 + nil; print "three";` prints only `one`), because the
+  book's `try` wraps the loop
+* **visitor completeness** - that `executor` handles every `stmt` node type and
+  `interpreter` every `expr` type, that `accept` serves both families and
+  rejects non-nodes, and that `defvisitor` refuses a visitor which misses a
+  node type, claims another family's, or names a family that does not exist
+* **global variables (8.2, 8.3.1)** - declaration with and without an
+  initializer; the name token kept whole so its *line* is available; `var a;`
+  reading as nil; redefinition legal (the book's `before` / `after` example
+  verbatim); globals persisting across separate `run` calls, as the REPL needs
+* **undefined variables (8.3)** - the message naming the variable and the
+  report naming the line; and that it is a **runtime** error and not a static
+  one - the chapter's explicit choice, and the property that will make mutual
+  recursion writable in chapter 10. The book's `print a; var a = "too late!";`
+  is asserted directly
+* **the environment, on its own (8.3)** - both constructors, `depth`,
+  `globals`, `binding-map`, `clear!`; define / get / assign; that keys are bare
+  lexemes, so two tokens with the same name on different lines reach the same
+  binding; that an unknown name throws a runtime error carrying *the token*;
+  and that `assign!` does not create a binding - asserted by checking the scope
+  is still empty afterwards, not just that it threw
+* **the scope chain (8.5.1)** - look-up walking outwards but never inwards; the
+  innermost binding winning while the outer one is left intact;
+  `resolve-environment` naming which scope holds a binding; and assignment
+  writing the binding look-up would have read rather than making a local copy
+* **assignment (8.4)** - the tree shape, and that the target is a **token**
+  rather than a subtree (`(ast/assign <expr> v)` throws), which is the l-value
+  distinction section 8.4.1 draws in prose; right-associativity; lowest
+  precedence; `print a = 2;` printing 2 because assignment is an expression;
+  and assigning to an undefined name being a runtime error that declares
+  nothing
+* **invalid assignment targets** - seven of them, including the pair that
+  justifies chapter 5 keeping a node for parentheses: `a = 3;` is fine and
+  `(a) = 3;` is not. Also that the error is *reported and not thrown*, so
+  `1 = 2; 3 = 4;` finds **both** - panic mode would have found one
+* **blocks and scope (8.5)** - the empty block; nesting; a local not escaping
+  its block; the chapter's two-blocks example; an enclosing variable visible
+  from inside; the `volume` cuboid example that a delete-the-names
+  implementation would get wrong; assignment inside a block writing the
+  enclosing variable while a declaration does not; and an unclosed `{` being
+  reported rather than hanging
+* **the chapter's closing example** - the nine lines of the three-deep
+  `a`/`b`/`c` program, exactly as the book gives them
+* **`executeBlock`'s restore** - that the enclosing scope is current again
+  after a block, *including* when a runtime error unwound out of it, which is
+  the property the book uses `finally` for and `binding` provides
+* **error recovery** - one bad statement costing one statement; several
+  unrelated errors all reported; nothing executing however much parsed; no nil
+  reaching the statement list; and 24 pathological inputs (`"{"`, `"}}}}"`,
+  `"= = ="`, `"a ="`, `", , ,"`, ...) each reporting an error and, more to the
+  point, each *terminating*
+* **challenge 8.1** - the classifier over fourteen inputs; that a failed
+  speculative parse leaves no error state **and prints nothing** (asserted on
+  captured stderr, which is where the first implementation was wrong); that a
+  scan error is reported once and survives the rollback; a driven REPL session
+  showing `1 + 2` printing `3` while `1 + 2;` prints nothing, state carrying
+  from line to line, and a runtime error leaving the session alive; and the
+  switch asserted off, where a bare expression is a syntax error again
+* **challenge 8.2** - the challenge's own example verbatim; the two distinct
+  messages; `var a = nil;` counting as initialized; assignment initializing; a
+  redeclaration un-initializing; the rule holding through a scope chain; and
+  that the sentinel is not a Lox value and cannot be forged
+* **challenge 8.3** - that `var a = 1; { var a = a + 2; print a; }` prints 3,
+  that the outer binding is unchanged, that the same shape with no enclosing
+  binding is a runtime error, and what challenge 8.2 does to it
+* **the pipeline end to end** - `lox.core/run` over a program using every
+  construct in the chapter; `run` printing nothing of its own; a static error
+  stopping everything including the statements that parsed; exit codes 0, 65
+  and 70 driven through the real `run-file` over a temp file, including that a
+  runtime error exits 70 *after* the statements before it have run; all four
+  stage flags still producing their own chapter's output; and
+  `examples/ch08_statements.lox` asserted line by line, so the expected output
+  in its comments is checked rather than claimed
+* **interaction with the earlier challenges** - where assignment slots into the
+  comma and ternary precedence levels when those are switched on, and chapter
+  7's three challenges still behaving correctly now that they are reached
+  through statements
 ## Note on AI Usage:
 
-AI has been used to re-organize code I have written by hand and help me with documentation and comment insertion. Unit tests, interpreter logic writing, and decisions were solely made by me.
+AI has been used to re-organize code I have written by hand, help me with documentation and comment insertions. Unit tests, interpreter logic writing, and decisions were solely made by me.

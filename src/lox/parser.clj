@@ -108,6 +108,83 @@
 ;;;;
 ;;;; 6.3 is on by default: it only ever fires on input that is already a syntax
 ;;;; error, so it changes no valid program - it just produces a better message.
+;;;;
+;;;; =============================================================================
+;;;; UPDATED IN CHAPTER 8 - Statements and State
+;;;; =============================================================================
+;;;;
+;;;; Chapter 6's `parse()` was, in the book's words, "a temporary hack to get
+;;;; the last chapter up and running": it parsed one expression and stopped.
+;;;; Chapter 8 gives the grammar its real starting rule and `parse` its real
+;;;; contract - a whole program, as a list of statements.
+;;;;
+;;;;   program     -> declaration* EOF ;
+;;;;
+;;;;   declaration -> varDecl
+;;;;                | statement ;
+;;;;   varDecl     -> "var" IDENTIFIER ( "=" expression )? ";" ;
+;;;;
+;;;;   statement   -> exprStmt
+;;;;                | printStmt
+;;;;                | block ;
+;;;;   exprStmt    -> expression ";" ;
+;;;;   printStmt   -> "print" expression ";" ;
+;;;;   block       -> "{" declaration* "}" ;
+;;;;
+;;;;   expression  -> assignment ;
+;;;;   assignment  -> IDENTIFIER "=" assignment
+;;;;                | equality ;
+;;;;   primary     -> ... | IDENTIFIER ;
+;;;;
+;;;; Four things in this chapter are worth more than a one-line note.
+;;;;
+;;;; 1. WHY `declaration` AND `statement` ARE TWO RULES (section 8.2.1).
+;;;;    Not every statement may appear everywhere. `if (monday) print "x";` is
+;;;;    fine; `if (monday) var beverage = "espresso";` is not, because the
+;;;;    scope of that variable would be anybody's guess. So the grammar is
+;;;;    stratified the same way chapter 6 stratified expressions by precedence:
+;;;;    `declaration` is the "lower precedence" level that may declare names,
+;;;;    `statement` the higher one that may not, and a block - which is a
+;;;;    `statement` containing `declaration`s - is the way back down, exactly
+;;;;    as parentheses are for expressions. Chapter 9 is where the distinction
+;;;;    starts paying, since `if` and `while` take a `statement`, not a
+;;;;    `declaration`.
+;;;;
+;;;; 2. WHERE PANIC MODE FINALLY GETS USED. `synchronize` has existed, unused
+;;;;    and unit-tested, since chapter 6. `parse-declaration` is the statement
+;;;;    boundary the book promised - "This declaration() method is the method
+;;;;    we call repeatedly [...] so it's the right place to synchronize when
+;;;;    the parser goes into panic mode" - so from this chapter a syntax error
+;;;;    costs you one statement rather than the whole file, and a file with two
+;;;;    unrelated mistakes reports both.
+;;;;
+;;;; 3. THE ASSIGNMENT TRICK (section 8.4.1). `a = 1` cannot be parsed by
+;;;;    looking at `a`: with one token of lookahead the parser cannot know the
+;;;;    `=` is coming, and in `makeList().head.next = node` it may be an
+;;;;    unbounded number of tokens away. So `parse-assignment` parses the left
+;;;;    side as an ordinary expression and, if an `=` turns up, *converts* the
+;;;;    r-value node it just built into an l-value. That works because every
+;;;;    valid assignment target also happens to be valid as an expression. It
+;;;;    is also why chapter 5 kept a `:grouping` node around something an
+;;;;    evaluator could have dropped: `a = 3` is legal and `(a) = 3` is not,
+;;;;    and the only thing that distinguishes them is that node.
+;;;;
+;;;; 4. WHERE ASSIGNMENT SITS AMONG THE CHALLENGE LEVELS. The book slots
+;;;;    `assignment` between `expression` and `equality`. With challenges 6.1
+;;;;    and 6.2 enabled the chain becomes
+;;;;
+;;;;      expression -> comma -> assignment -> conditional -> equality
+;;;;
+;;;;    which is C's order: `,` loosest, then `=`, then `?:`. With both
+;;;;    switches off - the default - `comma` and `conditional` fall straight
+;;;;    through and the chain is exactly the book's. Chapter 6's note that the
+;;;;    ternary's middle operand uses `parse-expression` so it would "pick up
+;;;;    assignment automatically when chapter 8 adds it" is now load-bearing:
+;;;;    `a ? b = 1 : c` parses, as it does in C.
+;;;;
+;;;; Chapter 6's single-expression entry point is still here, under the name
+;;;; `parse-one-expression`, because `clox --ast` and the chapter 6 test suite
+;;;; are both submissions of their own. `parse` is the book's chapter 8 one.
 ;;;; =============================================================================
 (ns lox.parser
   (:require [lox.ast :as ast]
@@ -286,7 +363,12 @@
   chapter 5 gave the `value` field the permissive `:object` kind.
 
   Falling off the end means the next token cannot begin an expression at all,
-  which is the chapter's second error site."
+  which is the chapter's second error site.
+
+  CHAPTER 8 adds the IDENTIFIER clause:
+
+    primary -> NUMBER | STRING | \"true\" | \"false\" | \"nil\"
+            |  \"(\" expression \")\" | IDENTIFIER ;"
   [state]
   (cond
     (check? state :false) [(advance state) (ast/literal false)]
@@ -296,6 +378,14 @@
     (or (check? state :number) (check? state :string))
     (let [state (advance state)]
       [state (ast/literal (:literal (previous-token state)))])
+
+    ;; Chapter 8, section 8.2.1. "That IDENTIFIER clause matches a single
+    ;; identifier token, which is understood to be the name of the variable
+    ;; being accessed." The whole token is kept, not just its lexeme, so that
+    ;; a runtime "Undefined variable" error can name a line.
+    (check? state :identifier)
+    (let [state (advance state)]
+      [state (ast/variable (previous-token state))])
 
     (check? state :left-paren)
     (let [state           (advance state)
@@ -419,12 +509,62 @@
 ;;; operator.
 ;;; ---------------------------------------------------------------------------
 
+;;; ---------------------------------------------------------------------------
+;;; Chapter 8, section 8.4.1 - assignment
+;;;
+;;;   assignment -> IDENTIFIER "=" assignment | conditional ;
+;;;
+;;; (The book writes `| equality`; `conditional` is the next level down once
+;;; challenge 6.2 is in the picture, and is `equality` when it is switched off.)
+;;; ---------------------------------------------------------------------------
+
+(defn parse-assignment
+  "Book: `assignment()`.
+
+  Parses the left-hand side as an ordinary expression and, on seeing an `=`,
+  converts that r-value node into an l-value - the trick section 8.4.1 builds
+  up to. Right-associative, so `a = b = c` is `a = (b = c)`; that is why the
+  right-hand side recurses into `parse-assignment` rather than looping the way
+  the binary levels do.
+
+  Two details that look like sloppiness and are not:
+
+  * An invalid target is *reported but not thrown*. \"We report an error if the
+    left-hand side isn't a valid assignment target, but we don't throw it
+    because the parser isn't in a confused state where we need to go into panic
+    mode and synchronize.\" We know exactly where we are - just past a complete
+    expression and an `=` - so we keep parsing. `lox.errors/had-error` is set,
+    so nothing will be executed.
+
+  * On that path we return the left-hand expression, as the book does, and
+    discard the parsed right-hand side. The tree is wrong, but it is only ever
+    handed to a caller that has already been told not to run it, and parsing
+    the right-hand side (rather than leaving it in the token stream) is what
+    keeps the *next* statement boundary where the user would expect it.
+
+  Only `:variable` is a valid target today; chapter 12 adds `:get` for
+  `object.field = value`."
+  [state]
+  (let [[state expr] (parse-conditional state)]
+    (if-let [state (match state :equal)]
+      (let [equals        (previous-token state)
+            [state value] (parse-assignment state)]
+        (if (ast/variable? expr)
+          [state (ast/assign (:name expr) value)]
+          (do (err/error equals "Invalid assignment target.")
+              [state expr])))
+      [state expr])))
+
 (defn parse-comma
-  "Challenge 6.1. Parse a comma expression, or fall through to `conditional`."
+  "Challenge 6.1. Parse a comma expression, or fall through to `assignment`.
+
+  CHAPTER 8: the operand level is now `assignment`, not `conditional`, which
+  puts `,` looser than `=` as in C - so `a = 1, b = 2` is two assignments and
+  not a parse error."
   [state]
   (if *allow-comma?*
-    (parse-left-assoc-binary state parse-conditional [:comma])
-    (parse-conditional state)))
+    (parse-left-assoc-binary state parse-assignment [:comma])
+    (parse-assignment state)))
 
 (defn parse-expression
   "Book: `expression()`.
@@ -518,8 +658,9 @@
 ;;; The entry point - section 6.4
 ;;; ---------------------------------------------------------------------------
 
-(defn parse
-  "Book: `Parser.parse()`. Parse a token vector into a single expression node.
+(defn parse-one-expression
+  "Chapter 6's `Parser.parse()`. Parse a token vector into a *single*
+  expression node, requiring that it is the whole input.
 
   Returns the node, or **nil** if a syntax error was found. The book is explicit
   about this contract: \"The parser promises not to crash or hang on invalid
@@ -527,15 +668,17 @@
   found.\" `lox.errors/had-error` is the flag callers should test; the nil is a
   convenience, not the signal.
 
-  Chapter 8 replaces this with a loop over statements, and the `catch` moves to
-  the statement boundary so that `synchronize` can do its job. For now there is
-  only one expression to parse, so an error unwinds all the way out here.
+  RENAMED IN CHAPTER 8, from `parse`. The book replaces this method outright -
+  it was \"a temporary hack to get the last chapter up and running\" - and
+  `parse` below is now the book's chapter 8 version, returning a list of
+  statements. This one survives under a new name for two reasons: `clox --ast`
+  still demonstrates chapter 6 from the command line, and challenge 8.1's REPL
+  needs exactly this - \"can the whole of this input be read as one
+  expression?\" - to tell an expression the user typed from a statement.
 
   Challenge 6.3 is applied before the descent begins: a leading binary operator
   is reported and its operand discarded, and then - since there is nothing left
-  to build a tree from in a single-expression grammar - we stop. From chapter 8
-  the same check will let the parser recover and continue with the next
-  statement."
+  to build a tree from in a single-expression grammar - we stop."
   [tokens]
   (let [state (make-parser tokens)]
     (try
@@ -560,35 +703,293 @@
           (throw e))))))
 
 (defn parse-source
-  "Convenience: scan *and* parse a string of Lox source.
+  "Convenience: scan *and* parse a string of Lox source as one expression.
 
   Kept here rather than in `lox.core` so that nothing which merely wants a
   syntax tree has to depend on the command-line entry point. Scan errors are
   reported by the scanner and leave `lox.errors/had-error` set, just as parse
-  errors do, so a caller only has to check the one flag."
+  errors do, so a caller only has to check the one flag.
+
+  Chapter 6's entry point; `parse-program` is chapter 8's."
+  [source]
+  (parse-one-expression (scanner/scan-tokens source)))
+
+;;; ---------------------------------------------------------------------------
+;;; Chapter 8 - statements, declarations and blocks
+;;;
+;;; Each rule keeps the signature the expression rules use,
+;;;
+;;;     state -> [state' stmt]
+;;;
+;;; except `parse-block`, which returns [state' stmts] because the book's
+;;; `block()` also returns a bare list rather than a `Stmt.Block`:
+;;;
+;;;   "Having block() return the raw list of statements and leaving it to
+;;;    statement() to wrap the list in a Stmt.Block looks a little odd. I did
+;;;    it that way because we'll reuse block() later for parsing function
+;;;    bodies and we don't want that body wrapped in a Stmt.Block."
+;;;
+;;; Chapter 10 is where that pays off.
+;;; ---------------------------------------------------------------------------
+
+(declare parse-declaration)
+
+(defn parse-print-statement
+  "Book: `printStatement()`.
+
+    printStmt -> \"print\" expression \";\" ;
+
+  The `print` token has already been consumed by `parse-statement`."
+  [state]
+  (let [[state value] (parse-expression state)
+        state         (consume state :semicolon "Expect ';' after value.")]
+    [state (ast/print-stmt value)]))
+
+(defn parse-expression-statement
+  "Book: `expressionStatement()`.
+
+    exprStmt -> expression \";\" ;
+
+  The fall-through case. \"It's hard to proactively recognize an expression
+  from its first token\", so anything that is not a recognised statement form
+  is assumed to be one of these - and if it is not an expression either,
+  `parse-primary` reports \"Expect expression.\" at the offending token."
+  [state]
+  (let [[state expr] (parse-expression state)
+        state        (consume state :semicolon "Expect ';' after expression.")]
+    [state (ast/expression-stmt expr)]))
+
+(defn parse-block
+  "Book: `block()`. Parse `declaration*` up to the closing brace.
+
+    block -> \"{\" declaration* \"}\" ;
+
+  Returns [state statements]; the `{` has already been consumed.
+
+  The `at-end?` test in the loop condition is not redundant with the `}` test:
+  \"We have to be careful to avoid infinite loops, even when parsing invalid
+  code. If the user forgets a closing }, the parser needs to not get stuck.\"
+  Running out of tokens drops out of the loop and lets `consume` report the
+  missing brace against the :eof token.
+
+  Statements that failed to parse come back as nil from `parse-declaration`
+  and are dropped. The book appends the null to its list, which is harmless
+  there only because `hadError` guarantees the list is never executed; an
+  `:stmts` field here is checked at construction, so a nil would be caught by
+  `block-stmt` instead - a worse place to find out. Dropping them keeps the
+  partial tree well-formed and still reports every error."
+  [state]
+  (loop [state state statements []]
+    (if (or (check? state :right-brace) (at-end? state))
+      [(consume state :right-brace "Expect '}' after block.") statements]
+      (let [[state stmt] (parse-declaration state)]
+        (recur state (if stmt (conj statements stmt) statements))))))
+
+(defn parse-statement
+  "Book: `statement()`.
+
+    statement -> exprStmt | printStmt | block ;
+
+  \"We determine which specific statement rule is matched by looking at the
+  current token\" - the leading keyword or brace - and fall through to an
+  expression statement when none matches. Chapter 9 adds `if`, `while` and
+  `for` to this `cond`; chapter 10 adds `return`."
+  [state]
+  (cond
+    (check? state :print)
+    (parse-print-statement (advance state))
+
+    (check? state :left-brace)
+    (let [[state statements] (parse-block (advance state))]
+      [state (ast/block-stmt statements)])
+
+    :else
+    (parse-expression-statement state)))
+
+(defn parse-var-declaration
+  "Book: `varDeclaration()`.
+
+    varDecl -> \"var\" IDENTIFIER ( \"=\" expression )? \";\" ;
+
+  The `var` token has already been consumed. A missing initializer leaves the
+  field nil - *not* a `(literal nil)` node - which is the distinction section
+  8.3.1 needs in order to say \"Lox sets a variable to nil if it isn't
+  explicitly initialized\", and that challenge 8.2 needs in order to say the
+  opposite."
+  [state]
+  (let [state (consume state :identifier "Expect variable name.")
+        name  (previous-token state)
+        [state initializer]
+        (if-let [state' (match state :equal)]
+          (parse-expression state')
+          [state nil])
+        state (consume state :semicolon
+                       "Expect ';' after variable declaration.")]
+    [state (ast/var-stmt name initializer)]))
+
+(defn parse-declaration
+  "Book: `declaration()`.
+
+    declaration -> varDecl | statement ;
+
+  **This is the synchronization point.** The machinery has been sitting in
+  this file unused since chapter 6, and the book is explicit that here is
+  where it belongs: \"This declaration() method is the method we call
+  repeatedly when parsing a series of statements in a block or a script, so
+  it's the right place to synchronize when the parser goes into panic mode.\"
+
+  Returns [state stmt], where `stmt` is nil if this declaration failed. On
+  failure the state comes from the exception rather than from the caller: the
+  cursor inside a half-parsed statement is where `synchronize` needs to start
+  discarding from, and a pure parser cannot read it off a shared object the
+  way the book's mutable `current` field lets it.
+
+  Challenge 6.3's check runs here rather than once per *file* as it did in
+  chapter 6, which is what the comment there anticipated: a statement that
+  begins with a stray binary operator is now reported, discarded, and followed
+  by an attempt at the next statement."
+  [state]
+  (try
+    (if-let [type (and *binary-error-productions?*
+                       (leading-binary-operator state))]
+      [(parse-missing-left-operand state type) nil]
+      (if-let [state' (match state :var)]
+        (parse-var-declaration state')
+        (parse-statement state)))
+    (catch clojure.lang.ExceptionInfo e
+      (if (parse-error? e)
+        [(synchronize (:state (ex-data e))) nil]
+        (throw e)))))
+
+(defn parse
+  "Book: chapter 8's `Parser.parse()`. Parse a token vector into a **vector of
+  statements** - a whole Lox program.
+
+    program -> declaration* EOF ;
+
+  Never nil and never throws: a program with syntax errors yields the
+  statements that did parse, and `lox.errors/had-error` is the signal that the
+  result must not be executed. That is a strictly different contract from
+  chapter 6's `parse-one-expression`, which returned nil, and it is why
+  `lox.core/run` tests the flag rather than the value - a partial list is
+  truthy but just as unrunnable.
+
+  \"The mandatory end token ensures the parser consumes the entire input and
+  doesn't silently ignore erroneous unconsumed tokens at the end of a script.\"
+  Chapter 6 had to bolt an explicit \"Expect end of expression.\" check on to
+  get that property; here it falls out of looping until :eof, so that
+  stop-gap now lives only in `parse-one-expression`.
+
+  The loop terminates because every iteration consumes at least one token: a
+  successful declaration ends on a `;` or `}`, and a failed one goes through
+  `synchronize`, which advances before it starts looking."
+  [tokens]
+  (loop [state (make-parser tokens) statements []]
+    (if (at-end? state)
+      statements
+      (let [[state stmt] (parse-declaration state)]
+        (recur state (if stmt (conj statements stmt) statements))))))
+
+(defn parse-program
+  "Convenience: scan *and* parse a string of Lox source into statements.
+  Chapter 8's counterpart to chapter 6's `parse-source`."
   [source]
   (parse (scanner/scan-tokens source)))
+
+;;; ---------------------------------------------------------------------------
+;;; Challenge 8.1 - a REPL that takes both statements and expressions
+;;;
+;;; "The REPL no longer supports entering a single expression and automatically
+;;;  printing its result value. That's a drag. Add support to the REPL to let
+;;;  users type in both statements and expressions. If they enter a statement,
+;;;  execute it. If they enter an expression, evaluate it and display the
+;;;  result value."
+;;;
+;;; The classification cannot be done by peeking at the first token: `a` begins
+;;; an expression (`a + 1`) and also a statement (`a = 1;`). What distinguishes
+;;; them is whether the *entire* line parses as one expression - which is
+;;; precisely the question chapter 6's entry point answers, so this is a second
+;;; reason to have kept it.
+;;;
+;;; Trying and backtracking means a failed attempt must leave no trace, or the
+;;; REPL would report "Expect expression." for every perfectly good `print`
+;;; statement. Leaving no trace takes *two* things, and it is worth naming them
+;;; separately because the first one alone looks sufficient and is not:
+;;;
+;;;   * the recorded error state is rolled back, via
+;;;     `lox.errors/error-state` / `restore-error-state!`; and
+;;;   * printing is suppressed for the duration of the attempt, via
+;;;     `lox.errors/*print-errors?*`.
+;;;
+;;; Without the second, a rolled-back error has still been written to stderr
+;;; and the user has still read it - the state is clean and the session is not.
+;;; (That is a failure a unit test asserting on `error-messages` would never
+;;; have caught, which is why the chapter 8 suite also captures stderr.)
+;;;
+;;; The snapshot is taken *after* scanning, and scanning happens outside the
+;;; suppression, so a genuine scan error ("Unterminated string.") is reported
+;;; once, printed once, and survives the rollback.
+;;; ---------------------------------------------------------------------------
+
+(defn parse-repl
+  "Challenge 8.1. Classify one line of REPL input.
+
+  Returns `[:expression expr]` if the whole line is a single expression, else
+  `[:statements stmts]`.
+
+  A failed expression attempt is silent and leaves no error state behind; the
+  statement parse that follows reports whatever is genuinely wrong."
+  [source]
+  (let [tokens (scanner/scan-tokens source)
+        saved  (err/error-state)
+        expr   (binding [err/*print-errors?* false]
+                 (parse-one-expression tokens))]
+    (if (and (some? expr) (not @err/had-error))
+      [:expression expr]
+      (do (err/restore-error-state! saved)
+          [:statements (parse tokens)]))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Grammar introspection - used by the tests and by the docs
 ;;; ---------------------------------------------------------------------------
 
 (def grammar
-  "The chapter 6 grammar, as text, lowest precedence first.
+  "The expression grammar, as text, lowest precedence first.
 
   Recorded so a test can assert that the implementation and the documented
   grammar were changed together - the kind of drift that is otherwise only
-  caught by a human reading both."
-  ["expression -> equality ;"
+  caught by a human reading both.
+
+  CHAPTER 8 changed two lines: `expression` now routes to `assignment`, and
+  `primary` gained its IDENTIFIER clause."
+  ["expression -> assignment ;"
+   "assignment -> IDENTIFIER \"=\" assignment | equality ;"
    "equality   -> comparison ( ( \"!=\" | \"==\" ) comparison )* ;"
    "comparison -> term ( ( \">\" | \">=\" | \"<\" | \"<=\" ) term )* ;"
    "term       -> factor ( ( \"-\" | \"+\" ) factor )* ;"
    "factor     -> unary ( ( \"/\" | \"*\" ) unary )* ;"
    "unary      -> ( \"!\" | \"-\" ) unary | primary ;"
    "primary    -> NUMBER | STRING | \"true\" | \"false\" | \"nil\""
-   "           |  \"(\" expression \")\" ;"])
+   "           |  \"(\" expression \")\" | IDENTIFIER ;"])
+
+(def statement-grammar
+  "The chapter 8 statement grammar, as text, starting rule first.
+
+  Separate from `grammar` because the two really are disjoint grammars over
+  disjoint node families - see `lox.ast`, section 8.1.1."
+  ["program     -> declaration* EOF ;"
+   "declaration -> varDecl | statement ;"
+   "varDecl     -> \"var\" IDENTIFIER ( \"=\" expression )? \";\" ;"
+   "statement   -> exprStmt | printStmt | block ;"
+   "exprStmt    -> expression \";\" ;"
+   "printStmt   -> \"print\" expression \";\" ;"
+   "block       -> \"{\" declaration* \"}\" ;"])
 
 (def precedence-order
   "Rule names from loosest-binding to tightest. Book: the table in section 6.1."
   (into [:expression]
         (concat (map :rule binary-levels) [:unary :primary])))
+
+(def statement-rules
+  "The statement rules, in the order `statement-grammar` documents them."
+  [:program :declaration :var-decl :statement :expr-stmt :print-stmt :block])

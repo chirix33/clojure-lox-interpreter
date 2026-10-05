@@ -108,6 +108,40 @@
   (reset! had-runtime-error true)
   nil)
 
+;;; ---------------------------------------------------------------------------
+;;; Chapter 8 - snapshotting the reporter
+;;;
+;;; ADDED IN CHAPTER 8 for challenge 8.1. The REPL has to answer "is this line
+;;; an expression or a statement?", and the only reliable way to ask is to try
+;;; parsing it as an expression and see. A failed attempt must leave no trace,
+;;; or every `print "hi";` typed at the prompt would also report the
+;;; "Expect expression." from the abandoned attempt.
+;;;
+;;; Not in the book, which never backtracks. It is three lines because the
+;;; error state was already gathered into named atoms rather than scattered
+;;; through the CLI - the same decision that made error reporting unit-testable
+;;; in chapter 4.
+;;; ---------------------------------------------------------------------------
+
+(defn error-state
+  "A snapshot of every piece of error state, for `restore-error-state!`."
+  []
+  {:had-error         @had-error
+   :had-runtime-error @had-runtime-error
+   :reported          @reported})
+
+(defn restore-error-state!
+  "Roll the reporter back to a snapshot taken by `error-state`.
+
+  Used to discard the errors of a speculative parse. Note that this is a
+  *rollback*, not a reset: errors reported before the snapshot - a scan error,
+  say - are still there afterwards."
+  [{:keys [had-error had-runtime-error reported] :as snapshot}]
+  (reset! lox.errors/had-error had-error)
+  (reset! lox.errors/had-runtime-error had-runtime-error)
+  (reset! lox.errors/reported reported)
+  snapshot)
+
 (defn error-messages
   "All error message strings reported so far - handy in tests."
   []

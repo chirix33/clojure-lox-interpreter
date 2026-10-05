@@ -375,11 +375,12 @@
 (deftest parsing-is-a-pure-function-of-its-input
   (testing "the same tokens parse to the same tree every time"
     (let [tokens (scanner/scan-tokens "1 + 2 * 3")]
-      (is (= (parser/parse tokens) (parser/parse tokens)))))
+      (is (= (parser/parse-one-expression tokens)
+             (parser/parse-one-expression tokens)))))
 
   (testing "parsing does not mutate the token vector"
     (let [tokens (scanner/scan-tokens "1 + 2")]
-      (parser/parse tokens)
+      (parser/parse-one-expression tokens)
       (is (= [:number :plus :number :eof] (mapv :type tokens))))))
 
 ;;; --- tokens in, trees out ---------------------------------------------------
@@ -394,7 +395,7 @@
   (testing "the token is the scanner's, unmodified"
     (let [tokens (scanner/scan-tokens "1 * 2")
           star   (first (filter #(= :star (:type %)) tokens))]
-      (is (= star (:operator (parser/parse tokens)))))))
+      (is (= star (:operator (parser/parse-one-expression tokens)))))))
 
 (deftest every-node-produced-is-a-valid-ast-node
   (testing "chapter 5's field checking never fires, i.e. the parser builds
@@ -717,11 +718,13 @@
   (testing "book: replace the token dump with the AST printer's output.
 
            Chapter 7 moved this out of `lox.core/run`, which now evaluates,
-           and into `lox.core/print-ast` behind the `--ast` flag - the book
-           simply deletes it, but each chapter here stays runnable. The
-           behaviour asserted is chapter 6's either way."
+           and chapter 8 made `--ast` print a whole program - so chapter 6's
+           exact behaviour, one expression with no trailing semicolon, lives
+           behind `--ast-expression`. The book simply deletes each stage; each
+           chapter here stays runnable, and the behaviour asserted is chapter
+           6's either way."
     (require 'lox.core)
-    (let [print-ast (resolve 'lox.core/print-ast)
+    (let [print-ast (resolve 'lox.core/print-ast-expression)
           [_ lines] (u/capture-out #(print-ast "1 + 2 * 3"))]
       (is (= ["(+ 1.0 (* 2.0 3.0))"] lines)))))
 

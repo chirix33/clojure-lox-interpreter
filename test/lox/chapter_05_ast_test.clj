@@ -329,17 +329,21 @@
                                   (:binary [e] 1)
                                   (:literal [e] 2)))]
       (is (some? e) "expansion should have thrown")
-      ;; Chapter 6 added :conditional to the family, so an incomplete visitor
-      ;; is now missing three productions rather than two. That this number
-      ;; changed *without* anything in lox.ast changing except one declaration
-      ;; line is the point of the design.
-      (is (= #{:grouping :unary :conditional} (set (:missing (ex-data e)))))))
+      ;; Chapter 6 added :conditional to the family and chapter 8 added
+      ;; :variable and :assign, so an incomplete visitor is now missing five
+      ;; productions rather than two. That this number keeps changing *without*
+      ;; anything in lox.ast changing except declaration lines is the point of
+      ;; the design - and that every real visitor had to be updated is the
+      ;; compile-time guarantee the Java interface was there to provide.
+      (is (= #{:grouping :unary :conditional :variable :assign}
+             (set (:missing (ex-data e)))))))
 
   (testing "a visitor naming a node type that does not exist is rejected"
     (let [e (expansion-failure '(lox.ast/defvisitor bogus
                                   (:binary [e] 1) (:grouping [e] 1)
                                   (:literal [e] 1) (:unary [e] 1)
                                   (:conditional [e] 1)
+                                  (:variable [e] 1) (:assign [e] 1)
                                   (:nonsense [e] 1)))]
       (is (some? e) "expansion should have thrown")
       (is (= [:nonsense] (:unknown (ex-data e))))))
@@ -353,7 +357,8 @@
                                "doc"
                                (:binary [e] 1) (:grouping [e] 2)
                                (:literal [e] 3) (:unary [e] 4)
-                               (:conditional [e] 5)))
+                               (:conditional [e] 5)
+                               (:variable [e] 6) (:assign [e] 7)))
           [head vname doc body] form]
       (is (= 'def head))
       (is (= 'complete vname))
@@ -367,7 +372,9 @@
                        (:grouping    [e] :g)
                        (:literal     [e] :l)
                        (:unary       [e] :u)
-                       (:conditional [e] :c))
+                       (:conditional [e] :c)
+                       (:variable    [e] :v)
+                       (:assign      [e] :a))
                      built-here))]
     (is (= :l (ast/accept (ast/literal 1.0) v)))
     (is (= :b (ast/accept (ast/binary (ast/literal 1.0)

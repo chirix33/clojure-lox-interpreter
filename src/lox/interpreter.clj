@@ -107,9 +107,91 @@
 ;;;; change the meaning of programs that are already *valid*. Flipping a switch
 ;;;; turns one on, and the test suite exercises every one in both positions.
 ;;;; This is the same convention chapter 6 used for its grammar challenges.
+;;;;
+;;;; =============================================================================
+;;;; UPDATED IN CHAPTER 8 - Statements and State
+;;;; =============================================================================
+;;;;
+;;;; "The interpreter we have so far feels less like programming a real
+;;;;  language and more like punching buttons on a calculator."
+;;;;
+;;;; Chapter 7 evaluated one expression to one value and was a pure function of
+;;;; its tree. This chapter gives the interpreter the two things a program
+;;;; needs: *statements*, which produce side effects rather than values, and
+;;;; *state*, so that a name written in one place can be read in another.
+;;;;
+;;;;   book                                  here
+;;;;   -----------------------------------   ---------------------------------
+;;;;   implements Stmt.Visitor<Void>         the `executor` visitor map
+;;;;   execute(stmt)                         (execute stmt)
+;;;;   executeBlock(stmts, environment)      (execute-block stmts env)
+;;;;   interpret(List<Stmt>)                 (interpret stmts)
+;;;;   private Environment environment       the dynamic var `*environment*`
+;;;;   visitExpressionStmt / visitPrintStmt  `executor`'s :expression / :print
+;;;;   visitVarStmt / visitBlockStmt         `executor`'s :var / :block
+;;;;   visitVariableExpr / visitAssignExpr   `interpreter`'s :variable / :assign
+;;;;
+;;;; --------------------------------------------------------------------------
+;;;; Two visitors, two return types
+;;;; --------------------------------------------------------------------------
+;;;;
+;;;; The book needs a second interface because its visitors are Java types:
+;;;; `Expr.Visitor<Object>` returns a value, `Stmt.Visitor<Void>` returns
+;;;; nothing, and `Interpreter` implements both. A visitor here is a map, so
+;;;; the second one is just a second map; `lox.ast/defvisitor` takes the family
+;;;; it belongs to so that completeness is still checked against the right
+;;;; field table. The split is worth keeping even though nothing forces it:
+;;;; "statements produce no values", and `evaluate` returning something while
+;;;; `execute` returns nothing is how that shows up in the code.
+;;;;
+;;;; (The book has to mention that Java will not accept lowercase `void` as a
+;;;; type argument and offers a boxed `Void` instead. Nothing here needs a
+;;;; stand-in for "no value", which is one of the few places this chapter is
+;;;; shorter in Clojure than in Java rather than merely different.)
+;;;;
+;;;; --------------------------------------------------------------------------
+;;;; The current environment, and why it is a dynamic var
+;;;; --------------------------------------------------------------------------
+;;;;
+;;;; Section 8.5.2 stores the current scope in a mutable field and swaps it
+;;;; around a block:
+;;;;
+;;;;     Environment previous = this.environment;
+;;;;     try { this.environment = environment; ...execute... }
+;;;;     finally { this.environment = previous; }
+;;;;
+;;;; and the book's own margin note calls it inelegant, floating the
+;;;; alternative - "explicitly pass the environment as a parameter to each
+;;;; visit method" - before rejecting it as tedious. We cannot take that
+;;;; alternative anyway: `lox.ast/accept` hands a visit function exactly one
+;;;; argument, the node, so the environment has to be ambient.
+;;;;
+;;;; Clojure's name for "ambient, rebindable, automatically restored on the way
+;;;; out" is a dynamic var, and `binding` *is* that save/try/finally/restore
+;;;; dance - so `execute-block` is the book's method with the bookkeeping
+;;;; removed rather than hidden. It even keeps the property the book is careful
+;;;; to point out about using `finally`: a runtime error thrown inside a block
+;;;; still leaves the enclosing scope current on the way out.
+;;;;
+;;;; The var's *root* binding is the global environment, and it has process
+;;;; lifetime. That is deliberate and it is the book's reason for making
+;;;; `Lox.interpreter` a static field: "it will later when the interpreter
+;;;; stores global variables. Those variables should persist throughout the
+;;;; REPL session."
+;;;;
+;;;; --------------------------------------------------------------------------
+;;;; Challenges (see docs/chapter08-challenges.md)
+;;;; --------------------------------------------------------------------------
+;;;;
+;;;;   8.1  REPL takes statements *or* expressions   `lox.parser/parse-repl`
+;;;;   8.2  reading an uninitialized variable errors
+;;;;          `lox.environment/*error-on-uninitialized?*`             off
+;;;;   8.3  `var a = a + 2;` inside a block - a written answer, plus tests
+;;;;        pinning down what this implementation actually does.
 ;;;; =============================================================================
 (ns lox.interpreter
   (:require [lox.ast :as ast]
+            [lox.environment :as env]
             [lox.errors :as err]))
 
 ;;; ---------------------------------------------------------------------------
@@ -421,6 +503,39 @@
 ;;; 7.2 The visitor
 ;;; ---------------------------------------------------------------------------
 
+;;; ---------------------------------------------------------------------------
+;;; 8.3.1 / 8.5.2 - the current environment
+;;; ---------------------------------------------------------------------------
+
+(def ^:dynamic *environment*
+  "Book: the `environment` field of `Interpreter`, which from section 8.5.2
+  \"represents the current environment [...] the innermost scope containing the
+  code to be executed\".
+
+  Its root value is the one global scope and lives as long as the process, so
+  REPL globals survive from line to line. `execute-block` rebinds it for the
+  duration of a block."
+  (env/make-environment))
+
+(defn current-environment
+  "The scope statements are currently executing in."
+  []
+  *environment*)
+
+(defn global-environment
+  "The outermost scope of the chain currently in effect."
+  []
+  (env/globals *environment*))
+
+(defn reset-globals!
+  "Forget every global binding, keeping the environment's identity.
+
+  Not in the book, where the global scope is only ever discarded by the
+  process exiting. The unit tests need a clean slate per test without having
+  to rebind `*environment*`, and so would a REPL `:reset` command."
+  []
+  (env/clear! (global-environment)))
+
 (declare evaluate)
 
 (ast/defvisitor interpreter
@@ -462,7 +577,27 @@
   (:conditional [{:keys [condition then-branch else-branch]}]
                 (if (truthy? (evaluate condition))
                   (evaluate then-branch)
-                  (evaluate else-branch))))
+                  (evaluate else-branch)))
+
+  ;; 8.3.1. "This simply forwards to the environment which does the heavy
+  ;; lifting to make sure the variable is defined." The whole token is passed,
+  ;; not the lexeme, so that an undefined name can be reported against a line.
+  (:variable [{:keys [name]}]
+             (env/get-var *environment* name))
+
+  ;; 8.4.2. Evaluate the right-hand side, store it, and *yield* it - because
+  ;; assignment is an expression and may be nested: `print a = 2;` prints 2.
+  ;;
+  ;; `assign!` rather than `define!` is the entire difference between `a = 1`
+  ;; and `var a = 1`: assignment may only write a binding that already exists,
+  ;; and walks out through the enclosing scopes to find it, so
+  ;;
+  ;;     var a = 1; { a = 2; } print a;     // 2, not 1
+  ;;
+  ;; writes the global rather than quietly creating a local. Lox has no
+  ;; implicit declaration; the chapter's design note argues the case at length.
+  (:assign   [{:keys [name value]}]
+             (env/assign! *environment* name (evaluate value))))
 
 (defn evaluate
   "Book: `Interpreter.evaluate`. Evaluate one expression node to a Lox value.
@@ -475,18 +610,125 @@
 ;;; 7.4 Hooking up the interpreter
 ;;; ---------------------------------------------------------------------------
 
+;;; ---------------------------------------------------------------------------
+;;; 8.1.3 / 8.5.2 - executing statements
+;;; ---------------------------------------------------------------------------
+
+(declare execute)
+
+(defn execute-block
+  "Book: `executeBlock`. Run `statements` with `environment` as the current
+  scope, restoring the previous scope on the way out.
+
+  `binding` is the book's save / try / set / finally / restore, including the
+  part the book calls out explicitly: the restore happens even when a runtime
+  error unwinds out of the block, so a failure inside `{ ... }` does not leave
+  the interpreter stuck in a dead scope.
+
+  Kept separate from the `:block` visit method for the book's reason - chapter
+  10 calls it directly, to run a function body in the environment holding the
+  parameters."
+  [statements environment]
+  (binding [*environment* environment]
+    (doseq [statement statements]
+      (execute statement))))
+
+(ast/defvisitor executor :stmt
+  "Book: `class Interpreter implements Stmt.Visitor<Void>`.
+
+  Statements are executed for their effects; nothing here returns a meaningful
+  value, which is the distinction between this visitor and `interpreter`
+  above."
+  ;; 8.1.3. Evaluate and throw the value away. The book notes the pleasing
+  ;; coincidence that it discards the result "by placing that call inside a
+  ;; Java expression statement".
+  (:expression [{:keys [expression]}]
+               (evaluate expression)
+               nil)
+
+  ;; 8.1.3. `stringify`, not `str`: section 7.4's rules are the *user*-facing
+  ;; ones, so `print 1;` prints `1` and not `1.0`, and `print nil;` prints
+  ;; `nil` and not an empty line.
+  (:print      [{:keys [expression]}]
+               (println (stringify (evaluate expression)))
+               nil)
+
+  ;; 8.3.1. An absent initializer is nil-the-missing-node, not a node holding
+  ;; nil, so the two cases are distinguishable - which is what lets this clause
+  ;; implement "Lox sets a variable to nil if it isn't explicitly initialized"
+  ;; while challenge 8.2 implements the opposite rule from the same tree.
+  ;;
+  ;; `define!`, not `assign!`: a declaration always binds in the innermost
+  ;; scope, which is what makes an inner `var a` shadow an outer `a` instead of
+  ;; overwriting it.
+  (:var        [{:keys [name initializer]}]
+               (env/define! *environment* (:lexeme name)
+                 (if (some? initializer)
+                   (evaluate initializer)
+                   (env/initial-value)))
+               nil)
+
+  ;; 8.5.2. A block is a scope: a fresh environment whose parent is the one we
+  ;; are in now. Discarding it at the end of the block is what makes local
+  ;; variables local, and chaining rather than deleting names one by one is
+  ;; what keeps a shadowed outer variable intact - the bug section 8.5.1 walks
+  ;; through with its `volume` example.
+  (:block      [{:keys [statements]}]
+               (execute-block statements (env/make-environment *environment*))
+               nil))
+
+(defn execute
+  "Book: `Interpreter.execute`. Run one statement for its effects.
+
+  The statement analogue of `evaluate`; runtime errors propagate and
+  `interpret` catches them."
+  [statement]
+  (ast/accept statement executor))
+
+;;; ---------------------------------------------------------------------------
+;;; 8.1.3 - hooking up the interpreter
+;;; ---------------------------------------------------------------------------
+
 (defn interpret
-  "Book: `Interpreter.interpret`. Evaluate `expr`, print the result, and report
-  a runtime error rather than letting it escape.
+  "Book: chapter 8's `Interpreter.interpret`. Execute a whole program.
+
+  Returns true if the program ran to completion and false if a runtime error
+  stopped it. The book's method is `void` and sets `hadRuntimeError`; we still
+  set that flag - it is what `run-file` turns into exit code 70 - and also
+  return the outcome, so a test need not consult a global to know what
+  happened.
+
+  The `try` is outside the loop, deliberately and consequentially: a runtime
+  error aborts the *program*, not just the statement that raised it. So
+
+      print \"one\"; print 1 + nil; print \"three\";
+
+  prints `one`, reports the error, and never reaches `three`. This is the one
+  place a runtime error is caught, so the interpreter - and a REPL session -
+  survives it."
+  [statements]
+  (try
+    (doseq [statement statements]
+      (execute statement))
+    true
+    (catch clojure.lang.ExceptionInfo e
+      (if (err/runtime-error? e)
+        (do (err/report-runtime-error e) false)
+        (throw e)))))
+
+(defn interpret-expression
+  "Chapter 7's `Interpreter.interpret`. Evaluate `expr`, print the result, and
+  report a runtime error rather than letting it escape.
 
   Returns the value on success and nil on a runtime error. The book's method
   is `void`; returning the value costs nothing and lets a test assert on the
   result without parsing stdout. `lox.errors/had-runtime-error` is still the
   flag a caller should branch on, since nil is also a perfectly good Lox value.
 
-  This is the *only* place a runtime error is caught, which is what section
-  7.3 is driving at: the error unwinds the entire evaluation of the expression
-  and stops there, leaving the interpreter (and a REPL session) alive."
+  RENAMED IN CHAPTER 8, from `interpret`. The book replaces the method; this
+  one stays because chapter 7 is a submission of its own *and* because
+  challenge 8.1's REPL needs precisely it: an expression typed at the prompt
+  is evaluated and its value displayed, which in chapter 8 no statement does."
   [expr]
   (try
     (let [value (evaluate expr)]

@@ -77,6 +77,40 @@
 ;;;; UPDATED IN CHAPTER 6: `:conditional` was added for challenge 6.2's ternary
 ;;;; operator. The four productions listed above are still exactly chapter 5's;
 ;;;; see the comment on the node itself.
+;;;;
+;;;; --------------------------------------------------------------------------
+;;;; UPDATED IN CHAPTER 8 - Statements and State
+;;;; --------------------------------------------------------------------------
+;;;;
+;;;; This is the chapter the file was written in anticipation of, and the one
+;;;; that tests the claim above. It adds, in total:
+;;;;
+;;;;   * two expression productions - `:variable` (8.2.1) and `:assign` (8.4.1)
+;;;;   * a second *family* of nodes, `stmt`, with four productions:
+;;;;     `:block`, `:expression`, `:print` and `:var`
+;;;;
+;;;; The book's `GenerateAst.main()` grows a second `defineAst` call, and the
+;;;; book notes the parameterisation was there all along ("That's why we passed
+;;;; in `Expr` as a parameter to `defineAst()`"). `define-ast` took its family
+;;;; name as a parameter from the start too, so the statement grammar really is
+;;;; one more call. Three things *did* have to change, and each one was a place
+;;;; where chapter 5 had assumed there would only ever be one family:
+;;;;
+;;;;   1. a registry (`ast-families`, `node-type->family`), so that generic
+;;;;      helpers like `fields-of` and `accept` can ask which grammar a node
+;;;;      came from instead of assuming `expr`;
+;;;;   2. `defvisitor` takes an optional family keyword, so that completeness
+;;;;      is checked against the right field table - the book's reason for
+;;;;      needing a second interface, `Stmt.Visitor<Void>`, at all;
+;;;;   3. three new field kinds - `:stmt`, `:stmts` and `:expr-or-nil` - for
+;;;;      `List<Stmt> statements` and the nullable `Expr initializer`.
+;;;;
+;;;; Section 8.1.1's design point is that expressions and statements are
+;;;; *disjoint*: nowhere does the grammar accept either one. The book gets that
+;;;; from two unrelated Java class hierarchies. Here it comes from the registry
+;;;; plus `check-field!`: a `:stmt` handed to an `:expr` field throws where the
+;;;; node is built, which is the same error javac would report, at the same
+;;;; point in the pipeline.
 ;;;; =============================================================================
 (ns lox.ast
   (:require [clojure.string :as str]
@@ -93,16 +127,98 @@
 ;;; handful of nanoseconds.
 ;;; ---------------------------------------------------------------------------
 
-(declare expr?)
+(declare expr? stmt?)
 
 (def field-kinds
   "Kind keyword -> [predicate, human-readable description].
 
   `:object` is the book's `Object value`: any Lox value at all, including nil
-  (Lox's `nil`), so its predicate always holds."
-  {:expr   [(fn [x] (expr? x))      "an expression node"]
-   :token  [(fn [x] (tok/token? x)) "a token"]
-   :object [(constantly true)       "any value"]})
+  (Lox's `nil`), so its predicate always holds.
+
+  ADDED IN CHAPTER 8. Three kinds join the original three, and each one names a
+  Java type the book's `defineAst` descriptions already use:
+
+    :expr-or-nil  the book's nullable `Expr initializer` on `Stmt.Var`. A
+                  `var a;` declaration has no initializer, and the book stores
+                  a literal Java null there - *not* a `Literal(nil)` node - so
+                  that \"implicitly nil\" (section 8.3.1) and challenge 8.2's
+                  \"uninitialized is an error\" can tell the two apart.
+    :stmt         `Stmt body`; first needed by chapter 9's `if` and `while`.
+    :stmts        the book's `List<Stmt> statements` on `Stmt.Block`."
+  {:expr        [(fn [x] (expr? x))               "an expression node"]
+   :expr-or-nil [(fn [x] (or (nil? x) (expr? x))) "an expression node or nil"]
+   :stmt        [(fn [x] (stmt? x))               "a statement node"]
+   :stmts       [(fn [x] (and (sequential? x) (every? stmt? x)))
+                 "a sequence of statement nodes"]
+   :token       [(fn [x] (tok/token? x))          "a token"]
+   :object      [(constantly true)                "any value"]})
+
+(def child-field-kinds
+  "The field kinds that hold *other nodes*, and so are traversed by `children`."
+  #{:expr :expr-or-nil :stmt :stmts})
+
+;;; ---------------------------------------------------------------------------
+;;; The family registry
+;;;
+;;; ADDED IN CHAPTER 8. Chapter 5 had exactly one family of nodes, so
+;;; `define-ast` could hard-code the names `expr-types` / `expr?`, and the
+;;; generic helpers below could name `expr-types` directly. Section 8.1.1 adds
+;;; a second, disjoint family:
+;;;
+;;;   "There is no place in the grammar where both an expression and a
+;;;    statement are allowed. [...] Since the two syntaxes are disjoint, we
+;;;    don't need a single base class that they all inherit from."
+;;;
+;;; The book gets its separation from two unrelated Java class hierarchies,
+;;; which is also what lets javac catch "passing a statement to a Java method
+;;; that expects an expression". We have no classes, so the registry below is
+;;; where that knowledge lives: it maps each family to its field table and each
+;;; node type to the family that owns it. `check-field!` then rejects a
+;;; statement handed to an `:expr` field - the same mistake, caught at the same
+;;; moment, construction time.
+;;; ---------------------------------------------------------------------------
+
+(def ast-families
+  "family keyword -> that family's field table. Book: the two `defineAst` calls."
+  (atom {}))
+
+(def node-type->family
+  "node-type keyword -> the family that owns it, e.g. :binary -> :expr.
+
+  Node types are unique across families *by assertion*: `register-family!`
+  refuses a duplicate, so no node map is ever ambiguous about which grammar it
+  came from. This is why `:print` can be a statement node type while `:print`
+  is also a *token* type - tokens are keyed by `:type`, nodes by `:node`."
+  (atom {}))
+
+(defn register-family!
+  "Record `types` as the field table of `family`. Called by `define-ast`."
+  [family types]
+  (doseq [nt (keys types)]
+    (when-let [owner (get @node-type->family nt)]
+      (when (not= owner family)
+        (throw (IllegalArgumentException.
+                (str "Node type " nt " is already owned by the " owner
+                     " family; it cannot also belong to " family "."))))))
+  (swap! ast-families assoc family types)
+  (swap! node-type->family into (zipmap (keys types) (repeat family)))
+  family)
+
+(defn family-types
+  "The field table of `family`, or nil if no such family is defined."
+  [family]
+  (get @ast-families family))
+
+(defn node-family
+  "Which family `node` belongs to - :expr or :stmt - or nil if it is not a node."
+  [node]
+  (when (map? node) (get @node-type->family (:node node))))
+
+(defn node?
+  "True if `x` is an AST node of *any* family.
+  Book: `x instanceof Expr || x instanceof Stmt`."
+  [x]
+  (some? (node-family x)))
 
 (defn check-field!
   "Throw a helpful exception if `value` is not a valid `kind` for field
@@ -141,17 +257,31 @@
 
   Field order in the vector is the constructor's argument order, which is the
   book's field order, which is source order. That matters for readability:
-  `(binary left operator right)` reads like the expression it represents."
-  [base types]
+  `(binary left operator right)` reads like the expression it represents.
+
+  CHAPTER 8 adds the optional trailing `opts` map, with one key:
+
+    :suffix  appended to every generated constructor and predicate name.
+
+  The statement family needs it. Three of the book's `Stmt` subclasses are
+  `Expression`, `Print` and `Var`, and `print`, `var` and `var?` are all taken
+  in Clojure - `clojure.core/print`, the `var` *special form*, and
+  `clojure.core/var?`. Defining those names here would shadow them, or for
+  `var` break the reader outright. `:suffix \"-stmt\"` yields `print-stmt`,
+  `var-stmt`, `block-stmt` and friends, which read better at the call sites
+  anyway: in `(ast/var-stmt name init)` you can see a *statement* being built."
+  [base types & [opts]]
   (let [base-name    (name base)
+        suffix       (or (:suffix opts) "")
+        family       (keyword base-name)
         types-sym    (symbol (str base-name "-types"))
         node-set-sym (symbol (str base-name "-node-types"))
         pred-sym     (symbol (str base-name "?"))
         class-name   (str/capitalize base-name)
         defs
         (for [[node-type fields] types]
-          (let [ctor-name (symbol (name node-type))
-                ctor-pred (symbol (str (name node-type) "?"))
+          (let [ctor-name (symbol (str (name node-type) suffix))
+                ctor-pred (symbol (str (name node-type) suffix "?"))
                 args      (mapv (fn [[_ field]] (symbol (name field))) fields)
                 checks    (map (fn [[kind field]]
                                  `(check-field! ~node-type ~(keyword (name field))
@@ -183,12 +313,13 @@
          ~(str "Every " base-name " node type. Book: the set of `" class-name
                "` subclasses.")
          ~(set (keys types)))
+       (register-family! ~family ~types-sym)
        (defn ~pred-sym
          ~(str "True if `x` is any " base-name " node.")
          [~'x]
          (and (map? ~'x) (contains? ~node-set-sym (:node ~'x))))
        ~@defs
-       ~(keyword base-name))))
+       ~family)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The chapter 5 expression grammar
@@ -221,7 +352,68 @@
    ;; three operands are genuinely one construct: chapter 7 must evaluate the
    ;; condition and then exactly one branch, which a :binary tree could not
    ;; express without special-casing the `?` and `:` tokens anyway.
-   :conditional [[:expr condition] [:expr then-branch] [:expr else-branch]]})
+   :conditional [[:expr condition] [:expr then-branch] [:expr else-branch]]
+
+   ;; ---------------------------------------------------------------------
+   ;; Chapter 8 - Statements and State
+   ;;
+   ;;   "Variable : Token name"            (section 8.2.1)
+   ;;   "Assign   : Token name, Expr value" (section 8.4.1)
+   ;;
+   ;; :variable is "simply a wrapper around the token for the variable name".
+   ;; It holds a *token*, not a string, even though the environment is keyed
+   ;; by the bare lexeme - because a runtime error has to name a line, and the
+   ;; line is on the token (section 8.3: "The exception contains the
+   ;; variable's token so we can tell the user where in their code they
+   ;; messed up").
+   ;;
+   ;; :assign's `name` is also a token and *not* an :expr, and section 8.4.1
+   ;; is emphatic about why: the left side of an `=` is not an expression that
+   ;; produces a value, it is an l-value naming a storage location. Giving the
+   ;; field the `:token` kind rather than `:expr` makes `check-field!` refuse
+   ;; `(assign <some expr> v)` at construction time, so the distinction the
+   ;; book draws in prose is enforced by the node itself.
+   :variable [[:token name]]
+   :assign   [[:token name] [:expr value]]})
+
+;;; ---------------------------------------------------------------------------
+;;; The chapter 8 statement grammar - section 8.1.1
+;;;
+;;; Compare with the book's second `defineAst` call:
+;;;
+;;;   "Block      : List<Stmt> statements",
+;;;   "Expression : Expr expression",
+;;;   "Print      : Expr expression",
+;;;   "Var        : Token name, Expr initializer"
+;;;
+;;; and with the grammar those four nodes cover (sections 8.1, 8.2.1, 8.5.2):
+;;;
+;;;   program     -> declaration* EOF ;
+;;;   declaration -> varDecl | statement ;
+;;;   varDecl     -> "var" IDENTIFIER ( "=" expression )? ";" ;
+;;;   statement   -> exprStmt | printStmt | block ;
+;;;   exprStmt    -> expression ";" ;
+;;;   printStmt   -> "print" expression ";" ;
+;;;   block       -> "{" declaration* "}" ;
+;;;
+;;; `:suffix "-stmt"` is explained on `define-ast`: `print`, `var` and `var?`
+;;; are names Clojure has already spoken for.
+;;;
+;;; Note that `:expression` and `:print` have *identical* shapes - both are a
+;;; single `Expr expression` - and are still two node types rather than one
+;;; tagged node. That is the book's split, and it is the right one: the two
+;;; differ in nothing but behaviour, and behaviour is exactly what the visitor
+;;; dispatches on. One node type with a flag would push that dispatch into an
+;;; `if` inside a visit method, which is the thing the Visitor pattern exists
+;;; to avoid.
+;;; ---------------------------------------------------------------------------
+
+(define-ast stmt
+  {:block      [[:stmts statements]]
+   :expression [[:expr expression]]
+   :print      [[:expr expression]]
+   :var        [[:token name] [:expr-or-nil initializer]]}
+  {:suffix "-stmt"})
 
 ;;; ---------------------------------------------------------------------------
 ;;; Generic node access
@@ -236,9 +428,12 @@
   "The declared fields of `node`, in source order, as [kind field] pairs.
 
   `field` is the symbol as written in the `define-ast` declaration; `field-key`
-  turns it into the keyword the node map is actually keyed by."
+  turns it into the keyword the node map is actually keyed by.
+
+  CHAPTER 8: looks the family up in the registry rather than assuming `expr`,
+  so this works unchanged for statements."
   [node]
-  (get expr-types (node-type node)))
+  (get (family-types (node-family node)) (node-type node)))
 
 (defn field-key
   "The map key a declared field name corresponds to: `left` -> :left."
@@ -246,17 +441,27 @@
   (keyword (name field)))
 
 (defn children
-  "The direct sub-expressions of `node`, in source order.
+  "The direct child *nodes* of `node`, in source order.
 
   The book has no equivalent: in Java you reach for the specific fields you
   already know a subclass has. Having the shape available as *data* means
   generic traversals (a size counter, a depth check, a search) need no
   per-node-type code at all - which is the other half of the expression
-  problem the chapter describes."
+  problem the chapter describes.
+
+  CHAPTER 8: `:stmt` and `:stmts` fields are children too, and a `:stmts`
+  field contributes all of its statements in order, so one traversal can walk
+  a whole program rather than a single expression. An absent `:expr-or-nil`
+  (a `var a;` with no initializer) contributes nothing, because there is no
+  node there to visit."
   [node]
-  (into [] (for [[kind field] (fields-of node)
-                 :when (= :expr kind)]
-             (get node (field-key field)))))
+  (into [] (mapcat (fn [[kind field]]
+                     (let [v (get node (field-key field))]
+                       (cond
+                         (= :stmts kind) (seq v)
+                         (nil? v)        nil
+                         :else           [v])))
+                   (filter (comp child-field-kinds first) (fields-of node)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The visitor - section 5.3
@@ -268,11 +473,19 @@
   A visitor is a map from node type to a one-argument function, so the double
   dispatch that the Java pattern needs two method calls to achieve is a single
   map lookup here. A missing entry throws rather than returning nil, mirroring
-  the compile error Java would have given us."
+  the compile error Java would have given us.
+
+  CHAPTER 8: this is also `stmt.accept(this)`. The book needs a second
+  interface, `Stmt.Visitor<Void>`, because a Java visitor is a type and the
+  two families are unrelated types. A visitor here is a *map*, and a map over
+  statement node types is the same kind of thing as a map over expression node
+  types, so one `accept` serves both. The families stay separate where it
+  matters - `defvisitor` checks completeness against one family, and
+  `check-field!` refuses a statement in an expression slot."
   [node visitor]
-  (when-not (expr? node)
+  (when-not (node? node)
     (throw (IllegalArgumentException.
-            (str "Not an expression node: " (pr-str node)))))
+            (str "Not an AST node: " (pr-str node)))))
   (let [nt (node-type node)
         f  (get visitor nt)]
     (when (nil? f)
@@ -296,18 +509,37 @@
   Every node type must be handled; omitting one is a *compile-time* error,
   which is exactly the guarantee Java's `Visitor<R>` interface provides. Tag
   the name `^:partial` when an incomplete visitor is genuinely wanted (one
-  that only cares about literals, say)."
+  that only cares about literals, say).
+
+  CHAPTER 8: an optional family keyword may follow the name -
+
+    (defvisitor executor :stmt
+      \"Book: `Stmt.Visitor<Void>`.\"
+      (:expression [{:keys [expression]}] ...)
+      ...)
+
+  It defaults to `:expr`, so every chapter 5-7 call site is unchanged. The
+  family decides which field table completeness is checked against, which is
+  the whole point: a `Stmt.Visitor` that forgot `visitBlockStmt` must not
+  compile, and an expression visitor must not be allowed to \"handle\" :print."
   [name & body]
-  (let [doc      (when (string? (first body)) (first body))
+  (let [family   (if (keyword? (first body)) (first body) :expr)
+        body     (if (keyword? (first body)) (rest body) body)
+        types    (or (family-types family)
+                     (throw (ex-info (str "defvisitor " name ": unknown node "
+                                          "family " family ". Known: "
+                                          (pr-str (vec (sort (keys @ast-families)))))
+                                     {:family family})))
+        doc      (when (string? (first body)) (first body))
         clauses  (if doc (rest body) body)
         handled  (set (map first clauses))
         partial? (:partial (meta name))
-        missing  (remove handled (keys expr-types))
-        extra    (remove (set (keys expr-types)) handled)]
+        missing  (remove handled (keys types))
+        extra    (remove (set (keys types)) handled)]
     (when (seq extra)
-      (throw (ex-info (str "defvisitor " name ": unknown node type(s) "
-                           (pr-str (vec extra)))
-                      {:unknown (vec extra)})))
+      (throw (ex-info (str "defvisitor " name ": " (pr-str (vec extra))
+                           " is/are not " family " node type(s)")
+                      {:unknown (vec extra) :family family})))
     (when (and (not partial?) (seq missing))
       (throw (ex-info (str "defvisitor " name ": no method for node type(s) "
                            (pr-str (vec missing))

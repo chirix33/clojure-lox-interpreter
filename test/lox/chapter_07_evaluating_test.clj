@@ -94,13 +94,20 @@
 
   This exercises the chapter's exit-code contract (0 / 65 / 70) through the
   actual entry point. `run-file` resets the error state itself, so no fixture
-  interference."
+  interference.
+
+  CHAPTER 8: the `run-fn` is passed explicitly as `run-expression`, because
+  these sources are bare expressions - chapter 7's examples - and a bare
+  expression is not a legal chapter 8 program. `run-file` has taken an
+  optional `run-fn` since chapter 4, for exactly this."
   [src]
   (let [file (doto (java.io.File/createTempFile "lox-ch07-" ".lox")
                (.deleteOnExit))]
     (spit file src)
     (try
-      (let [[status out] (u/capture-out #(core/run-file (.getPath file)))]
+      (let [[status out] (u/capture-out
+                          #(core/run-file (.getPath file)
+                                          core/run-expression))]
         [status out])
       (finally (.delete file)))))
 
@@ -601,11 +608,16 @@
       (is (u/had-runtime-error?)))))
 
 (deftest core-run-evaluates-rather-than-printing-the-tree
-  (testing "chapter 7 replaces chapter 6's tree printing in `lox.core/run`"
-    (is (= ["3"] (second (u/capture-out #(core/run "1 + 2"))))))
+  ;; CHAPTER 8 NOTE. `lox.core/run` now runs a whole *program*, so chapter 7's
+  ;; behaviour - evaluate one bare expression and print its value - moved to
+  ;; `run-expression`, behind `--expression`. The contract asserted here is
+  ;; still exactly chapter 7's; only the name of the entry point changed.
+  (testing "chapter 7 replaces chapter 6's tree printing with a value"
+    (is (= ["3"] (second (u/capture-out #(core/run-expression "1 + 2"))))))
 
   (testing "chapter 6's behaviour is still reachable, for its own submission"
-    (is (= ["(+ 1.0 2.0)"] (second (u/capture-out #(core/print-ast "1 + 2"))))))
+    (is (= ["(+ 1.0 2.0)"]
+           (second (u/capture-out #(core/print-ast-expression "1 + 2"))))))
 
   (testing "as is chapter 4's"
     (let [[_ out] (u/capture-out #(core/print-tokens "1"))]
@@ -613,7 +625,7 @@
 
   (testing "a static error stops us before evaluation - nothing is printed"
     (err/reset-errors!)
-    (let [[_ out] (u/capture-out #(core/run "1 +"))]
+    (let [[_ out] (u/capture-out #(core/run-expression "1 +"))]
       (is (= [] out))
       (is (u/had-error?))
       (is (not (u/had-runtime-error?))))))

@@ -29,11 +29,35 @@
 ;;;; flags - "If the user is running the REPL, we don't care about tracking
 ;;;; runtime errors. After they are reported, we simply loop around."
 ;;;;
+;;;; UPDATED IN CHAPTER 8 - Statements and State (sections 8.1.3, 8.5.2). `run`
+;;;; now parses a *program* and executes it:
+;;;;
+;;;;     scan -> tokens -> parse -> statements -> execute
+;;;;
+;;;; Two consequences for this file, both small and both worth naming.
+;;;;
+;;;; First, `run` no longer prints anything itself. Chapters 6 and 7 printed
+;;;; the tree and then the value, because there was no other way to see that
+;;;; anything had happened. From chapter 8 a program says what it wants to say
+;;;; with `print`, and a `run` that also echoed its last expression would be
+;;;; inventing output the language does not specify.
+;;;;
+;;;; Second, the `hadError` guard between parsing and executing stops being a
+;;;; nil check and becomes a genuine check of the flag. Chapter 6's `parse`
+;;;; returned nil on a syntax error; chapter 8's returns the statements that
+;;;; *did* parse, which is truthy and must still not be run. The book makes
+;;;; the same move, and this is the case its comment ("Stop if there was a
+;;;; syntax error") was always guarding against.
+;;;;
+;;;; Challenge 8.1 is implemented in `run-prompt`: a line that is a complete
+;;;; expression is evaluated and its value displayed, and anything else is
+;;;; executed as statements. See `*repl-echoes-expressions?*`.
+;;;;
 ;;;; The book deletes each chapter's temporary output as the next one replaces
 ;;;; it. We keep the old behaviours behind flags instead - `--tokens` for
-;;;; chapter 4's token dump and `--ast` for chapter 6's tree printer - because
-;;;; each chapter is a graded submission of its own and its example script
-;;;; should stay runnable.
+;;;; chapter 4's token dump and `--ast` for the tree printer - because each
+;;;; chapter is a graded submission of its own and its example script should
+;;;; stay runnable.
 ;;;; =============================================================================
 (ns lox.core
   (:gen-class)
@@ -55,33 +79,98 @@
     (println (tok/token->string token))))
 
 (defn print-ast
-  "Chapter 6's `run`: scan, parse, and print the syntax tree.
+  "`run`, but printing the syntax tree instead of executing it.
 
-  Superseded by evaluation in chapter 7, but kept available behind `--ast` so
-  that chapter 6 can still be demonstrated - and because seeing the tree is
-  still the quickest way to check that precedence came out right."
+  Chapter 6's temporary `run`, promoted to a permanent debugging aid behind
+  `--ast`: seeing the tree is still the quickest way to check that precedence
+  came out right, and it is the only way to see what the parser did with a
+  construct whose runtime behaviour looks the same either way.
+
+  UPDATED IN CHAPTER 8 to print a whole *program*, one statement per line,
+  since from this chapter a script is a list of declarations rather than a
+  single expression. `--ast-expression` keeps the exact chapter 6 behaviour
+  for a single expression with no trailing semicolon."
   [source]
-  (let [expression (parser/parse (scanner/scan-tokens source))]
+  (let [statements (parser/parse-program source)]
+    (when-not @err/had-error
+      (println (printer/print-program statements)))))
+
+(defn print-ast-expression
+  "Chapter 6's `run`, verbatim: scan, parse *one expression*, print its tree.
+
+  Behind `--ast-expression`, so that chapter 6's submission is still runnable
+  exactly as it was - `clox --ast-expression` accepts `1 + 2 * 3` with no
+  semicolon and no statement around it."
+  [source]
+  (let [expression (parser/parse-source source)]
     (when-not @err/had-error
       (println (printer/print-ast expression)))))
 
 (defn run
   "Book: `Lox.run`.
 
-  Chapter 7 version: scan, parse, and *evaluate*, printing the resulting value.
+  Chapter 8 version: scan, parse into statements, and execute them. Anything
+  the user sees was printed by the program itself.
 
   The `hadError` check between parsing and interpreting is the book's (\"Stop
-  if there was a syntax error\"), and it is load-bearing: `parse` returns nil
-  on a syntax error, and handing nil to the interpreter would replace the
-  useful message the parser already reported with a meaningless one from
-  `accept`. Checking the flag rather than the nil is also what generalises -
-  from chapter 8 the parser returns a *partial* list of statements after an
-  error, which is non-nil but still must not be run."
+  if there was a syntax error\"), and in this chapter it finally has to be a
+  check of the *flag*: `parse` returns the statements that parsed successfully,
+  so a program with a syntax error yields a non-empty, perfectly walkable
+  list that must nevertheless not be run. Executing half a program whose
+  meaning we have already failed to determine is how a tool produces output
+  that is worse than no output."
   [source]
-  (let [tokens     (scanner/scan-tokens source)
-        expression (parser/parse tokens)]
+  (let [statements (parser/parse (scanner/scan-tokens source))]
     (when-not @err/had-error
-      (interp/interpret expression))))
+      (interp/interpret statements))))
+
+(def ^:dynamic *repl-echoes-expressions?*
+  "Challenge 8.1. When true (the default), a REPL line that is a complete
+  expression is evaluated and its value printed, rather than being rejected
+  for want of a semicolon.
+
+  On by default, unlike the chapter 6 and 7 challenge switches, and the
+  difference is principled: those changed what *programs* mean, and had to
+  default to the book's language so that this implementation and clox agree.
+  This one changes nothing about the language at all - `run` is untouched, a
+  script behaves identically, and the only difference is whether the prompt
+  answers `1 + 2` with `3` or with a syntax error. The book's own framing
+  (\"That's a drag\") treats the regression as an accident of implementation
+  order rather than a design decision."
+  true)
+
+(defn run-repl-line
+  "Execute one line of REPL input. Challenge 8.1.
+
+  With the challenge on, `lox.parser/parse-repl` decides whether the line is
+  one complete expression or a series of statements, and the two are handled
+  the two different ways the challenge asks for: an expression is evaluated
+  and *displayed* (chapter 7's `interpret-expression`), statements are merely
+  executed. With it off, this is exactly `run`.
+
+  Note what makes the distinction visible: `1 + 2` prints `3`, while
+  `1 + 2;` - an expression *statement* - prints nothing, because that is what
+  an expression statement does. The semicolon is not noise."
+  [source]
+  (if-not *repl-echoes-expressions?*
+    (run source)
+    (let [[kind parsed] (parser/parse-repl source)]
+      (when-not @err/had-error
+        (case kind
+          :expression (interp/interpret-expression parsed)
+          :statements (interp/interpret parsed))))))
+
+(defn run-expression
+  "Chapter 7's `run`: scan, parse *one expression*, evaluate it and print the
+  value.
+
+  Behind `--expression`, so chapter 7's submission stays runnable: that
+  chapter's example script is a bare expression with no semicolon, which is
+  not a legal chapter 8 program at all."
+  [source]
+  (let [expression (parser/parse-source source)]
+    (when-not @err/had-error
+      (interp/interpret-expression expression))))
 
 (defn run-file
   "Book: `Lox.runFile`. Execute a script; returns the process exit status.
@@ -103,8 +192,16 @@
   "Book: `Lox.runPrompt`. The interactive REPL.
 
   `hadError` is reset after every line: a mistake on one line should not kill
-  the whole session. Control-D (EOF) makes `read-line` return nil and ends it."
-  ([] (run-prompt run))
+  the whole session. Control-D (EOF) makes `read-line` return nil and ends it.
+
+  CHAPTER 8: the default `run-fn` is `run-repl-line`, not `run`, so that
+  challenge 8.1's expression echoing is what you get at the prompt. Note that
+  *globals* are deliberately not reset between lines - only the error flags
+  are. `lox.interpreter/*environment*` keeps its root binding for the life of
+  the process, which is the book's reason for making `Lox.interpreter` a
+  static field: \"Those variables should persist throughout the REPL
+  session.\""
+  ([] (run-prompt run-repl-line))
   ([run-fn]
    (loop []
      (print "> ")
@@ -121,23 +218,38 @@
   Keeping the earlier stages reachable means every chapter's example script
   stays runnable, and makes the pipeline visible from the command line:
 
-    clox --tokens f.lox   chapter 4   source -> tokens
-    clox --ast    f.lox   chapter 6   source -> syntax tree
-    clox          f.lox   chapter 7   source -> value"
-  {"--tokens" print-tokens
-   "--ast"    print-ast})
+    clox --tokens         f.lox   ch. 4   source -> tokens
+    clox --ast-expression f.lox   ch. 6   source -> one expression's tree
+    clox --expression     f.lox   ch. 7   source -> one expression's value
+    clox --ast            f.lox   ch. 8   source -> a program's trees
+    clox                  f.lox   ch. 8   source -> run it"
+  {"--tokens"         print-tokens
+   "--ast"            print-ast
+   "--ast-expression" print-ast-expression
+   "--expression"     run-expression})
 
 (defn -main
   "Book: `Lox.main`. With one argument, run that script; with none, start the
-  REPL; with more, complain and exit 64."
-  [& args]
-  (let [run-fn (get stage-flags (first args) run)
-        args   (if (contains? stage-flags (first args)) (rest args) args)
-        status (cond
-                 (> (count args) 1)
-                 (do (println "Usage: clox [--tokens | --ast] [script]") 64)
+  REPL; with more, complain and exit 64.
 
-                 (= (count args) 1) (run-file (first args) run-fn)
-                 :else              (do (run-prompt run-fn) 0))]
+  CHAPTER 8: a *script* and a *prompt* no longer want the same function. A
+  script is a program, so it gets `run`. A prompt gets `run-repl-line`, which
+  additionally displays the value of a line that is a bare expression
+  (challenge 8.1). A stage flag overrides both, so `clox --tokens` with no
+  script still gives an interactive token dump."
+  [& args]
+  (let [flag    (first args)
+        staged? (contains? stage-flags flag)
+        run-fn  (get stage-flags flag run)
+        repl-fn (if staged? run-fn run-repl-line)
+        args    (if staged? (rest args) args)
+        status  (cond
+                  (> (count args) 1)
+                  (do (println (str "Usage: clox [--tokens | --ast | "
+                                    "--ast-expression | --expression] [script]"))
+                      64)
+
+                  (= (count args) 1) (run-file (first args) run-fn)
+                  :else              (do (run-prompt repl-fn) 0))]
     (flush)
     (System/exit status)))
