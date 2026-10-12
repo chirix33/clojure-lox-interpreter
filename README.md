@@ -8,7 +8,7 @@ A tree-walking interpreter for the **Lox** programming language, written in
 
 [Crafting Interpreters]: https://craftinginterpreters.com/
 
-**Current state: Chapter 8 — Statements and State.**
+**Current state: Chapter 9 — Control Flow.** Lox is now Turing-complete.
 
 | Chapter | Topic | Status |
 | ------- | ----- | ------ |
@@ -17,7 +17,7 @@ A tree-walking interpreter for the **Lox** programming language, written in
 | 6  | Parsing Expressions     | ✅ complete |
 | 7  | Evaluating Expressions  | ✅ complete |
 | 8  | Statements and State    | ✅ complete |
-| 9  | Control Flow            | not started |
+| 9  | Control Flow            | ✅ complete |
 | 10 | Functions               | not started |
 | 11 | Resolving and Binding   | not started |
 | 12 | Classes                 | not started |
@@ -39,17 +39,19 @@ the Clojure CLI installed. If you do have them, the standard commands work too.
 
 ```bash
 ./scripts/test.sh                        # run the whole unit-test suite
-./scripts/lox.sh examples/ch08_statements.lox   # run a Lox program
+./scripts/lox.sh examples/ch09_control_flow.lox # run a Lox program
 ./scripts/lox.sh                         # interactive REPL (Ctrl-D to exit)
-./scripts/lox.sh --ast examples/ch08_statements.lox    # chapter 8 syntax trees
+./scripts/lox.sh --ast examples/ch09_control_flow.lox  # syntax trees (see the
+                                         #   `for` desugaring in chapter 9)
 ./scripts/lox.sh --expression examples/ch07_evaluating.lox      # chapter 7 value
 ./scripts/lox.sh --ast-expression examples/ch06_parsing.lox     # chapter 6 tree
 ./scripts/lox.sh --tokens examples/ch04_scanning.lox   # chapter 4 token dump
 ./scripts/astdemo.sh                     # chapter 5: hand-built syntax tree
 ```
 
-As of chapter 8 the language is a language: a script is a list of statements,
-names can be bound and rebound, and `{ }` opens a scope.
+As of chapter 9 the language can compute: a script is a list of statements,
+names can be bound and rebound, `{ }` opens a scope, and `if` / `while` / `for`
+mean a program's running time is no longer bound by its length.
 
 ```
 > var beverage = "espresso";
@@ -93,13 +95,13 @@ submission is still runnable on its own:
 | `--ast-expression` | 6 | source → one expression's syntax tree |
 | `--expression` | 7 | source → one expression's value |
 | `--ast` | 8 | source → a program's syntax trees, one per line |
-| *(none)* | 8 | source → run it |
+| *(none)* | 9 | source → run it |
 
 On Windows PowerShell, use the `.ps1` equivalents:
 
 ```bash
 powershell -File scripts/test.ps1
-powershell -File scripts/lox.ps1 examples/ch08_statements.lox
+powershell -File scripts/lox.ps1 examples/ch09_control_flow.lox
 powershell -File scripts/astdemo.ps1
 ```
 
@@ -150,8 +152,10 @@ src/lox/
   ast.clj        Chapter 5 — the expression AST: define-ast, nodes, visitors
   ast_printer.clj Chapter 5 — AstPrinter (5.4) and the RPN printer (chal. 5.3)
   parser.clj     Chapter 6 — the recursive descent parser
+                 Chapter 9 — if / while / for (desugared), and / or
   interpreter.clj Chapter 7 — the tree-walking evaluator and runtime errors
                  Chapter 8 — statements, and the current environment
+                 Chapter 9 — branching, looping, short-circuiting
   environment.clj Chapter 8 — the scope chain: define / get / assign
 
 test/lox/
@@ -162,12 +166,15 @@ test/lox/
   chapter_06_parsing_test.clj   Chapter 6 tests
   chapter_07_evaluating_test.clj Chapter 7 tests
   chapter_08_statements_test.clj Chapter 8 tests
+  chapter_09_control_flow_test.clj Chapter 9 tests
 
 examples/
   ch04_scanning.lox             sample input exercising the lexical grammar
   ch06_parsing.lox              one expression exercising every precedence level
   ch07_evaluating.lox           one expression to evaluate, plus a tour in comments
   ch08_statements.lox           every example from chapter 8, with expected output
+  ch09_control_flow.lox         if / and / or / while / for, and the chapter's
+                                Fibonacci program
 
 scripts/
   bootstrap.{sh,ps1}  fetch the Clojure jars into lib/
@@ -180,6 +187,7 @@ docs/
   chapter06-challenges.md   challenges 6.1-6.3: grammars, design notes, switches
   chapter07-challenges.md   challenges 7.1-7.3: comparisons, string +, divide by zero
   chapter08-challenges.md   challenges 8.1-8.3: the REPL, uninitialized vars, shadowing
+  chapter09-challenges.md   challenges 9.1-9.3: Church booleans, tail calls, `break`
 ```
 
 Every source file carries a header comment naming the chapter it comes from
@@ -489,6 +497,81 @@ them: "does this whole line parse as one expression?" is what classifies REPL
 input, and "evaluate one expression and display the value" is what no statement
 does any more.
 
+### Chapter 9 - Control Flow
+
+**`for` is translated, not implemented.** This is the first chapter in which
+the front end *rewrites* rather than transcribes. Section 9.5.1 desugars the
+C-style `for` into the nodes that already exist, so `lox.interpreter` never
+learns the construct is in the language — there is no `:for` node and no
+`visitForStmt`, and the chapter 9 test suite asserts both. The whole of `for`
+is three lines at the end of `parse-for-statement`:
+
+```clojure
+body (if increment (ast/block-stmt [body (ast/expression-stmt increment)]) body)
+body (ast/while-stmt (or condition (ast/literal true)) body)
+body (if initializer (ast/block-stmt [initializer body]) body)
+```
+
+built inside out because each wrapping encloses the last. Each one is *skipped*
+when its clause was omitted, so `for (;;) x;` desugars to a bare
+`while (true) x;` with no empty blocks around it — which matters because
+`--ast` on a `for` loop is the only place a reader can actually see the
+rewrite:
+
+```
+$ ./scripts/lox.sh --ast loop.lox      # for (var i = 0; i < 2; i = i + 1) print i;
+(block (var i 0.0) (while (< i 2.0) (block (print i) (; (= i (+ i 1.0))))))
+```
+
+The outer block is also load-bearing rather than decorative: it is what scopes
+the loop variable to the loop, so `i` is undefined after the loop ends.
+
+**The dangling else is resolved by doing nothing.** `if (a) if (b) x(); else
+y();` is genuinely ambiguous as a context-free grammar, and
+`parse-if-statement` binds the `else` to the nearest `if` without a line of
+code to that effect — the innermost recursive call is simply the one holding
+the token stream when the `else` comes into view, so it claims it. It is the
+clearest case in the book of the parser, rather than the written grammar,
+being the language's definition.
+
+**`:logical` is a separate node from `:binary` although its fields are
+identical.** Section 9.3 argues this in Java terms (a shared class would force
+`visitBinaryExpr` to re-test the operator), and the argument is stronger here:
+a visitor is a map from node type to function, so a node type *is* the
+dispatch. Two node types with the same shape cost one map entry; one node type
+with two behaviours costs an `if` on the operator token inside the evaluator,
+re-deciding at run time what the parser already knew. This is the same split,
+for the same reason, as chapter 8's identically-shaped `:expression` and
+`:print`. The general principle the chapter makes concrete is that **shape is
+not meaning** — `:if` has the same three children as challenge 6.2's
+`:conditional`, too, and what separates all three pairs is *when the children
+are evaluated*.
+
+**Short-circuiting is tested with side effects, not values.** An eager
+implementation of `and`/`or` would compute the right *answers*, so a test
+comparing values passes against a wrong implementation. The suite asserts
+instead that a short-circuited operand's side effect never happened, and —
+the strongest available evidence — that a *runtime error* in it never fired:
+`print false and 1 < "two";` prints `false` and reports nothing.
+
+**Lox loops are bounded by time, not by the JVM stack.** The `:while` clause
+uses `clojure.core/while`, which is a `loop`/`recur`, so iterations consume no
+stack; the test suite drives one loop for 100,000 iterations to pin that down.
+That is what makes section 9.1's Turing-completeness claim real rather than
+nominal. (Lox *recursion* will be stack-bounded from chapter 10, and
+`docs/chapter09-challenges.md` is explicit about that gap under challenge 9.2.)
+
+**Challenge 9.3's `break` is the first switched-off challenge that is not a
+superset.** Challenges 6.1 and 6.2 added operators, which cost nothing to
+leave on in principle; reserving the *word* `break` takes a name away from
+every program that used it, and `var break = 1;` is a legal program in the
+book's Lox. So the switch (`lox.token/*allow-break?*`, off by default) lives in
+the lexical layer, because reserving a word is a scanning decision that has to
+be made before the parser sees a token. The "must be inside a loop" rule is
+enforced as a *syntax* error by a `:loop-depth` count threaded through the
+immutable parser state — which is why closing a loop restores the count
+instead of leaving it raised, with no `try`/`finally` to forget.
+
 ## Deviations from the book
 
 I added one deliberate addition, from the chapter's own challenge list:
@@ -654,17 +737,26 @@ sequences (so `"a\nb"` is six characters, backslash included).
 
 ## Testing
 
-`./scripts/test.sh` runs the whole suite: **212 test cases / 1,550
-assertions** across chapters 4 to 8.
+`./scripts/test.sh` runs the whole suite: **249 test cases / 1,930
+assertions** across chapters 4 to 9.
 
 | Chapter | Test cases | Assertions |
 | ------- | ---------- | ---------- |
 | 4 — Scanning | 23 | 137 |
-| 5 — Representing Code | 32 | 209 |
-| 6 — Parsing Expressions | 83 | 335 |
+| 5 — Representing Code | 32 | 212 |
+| 6 — Parsing Expressions | 83 | 345 |
 | 7 — Evaluating Expressions | 36 | 489 |
-| 8 — Statements and State | 38 | 380 |
-| **total** | **212** | **1,550** |
+| 8 — Statements and State | 38 | 386 |
+| 9 — Control Flow | 37 | 361 |
+| **total** | **249** | **1,930** |
+
+The chapter 5, 6 and 8 counts grew slightly in chapter 9. Those suites each
+record a snapshot of the grammar as it stood — the precedence table, the
+`statement` production, the set of node types a visitor must handle — so a
+chapter that genuinely changes the grammar is *supposed* to break them. Each
+such assertion was updated in place with a note saying what chapter 9 changed
+and why; a chapter that added a production without breaking them would not
+have added it to the family at all.
 
 A single chapter can be run on its own:
 
@@ -692,7 +784,7 @@ Covering:
 * line-number tracking across newlines, strings and block comments
 * a whole-program smoke test over a realistic Lox source file
 
-### Chapter 5 - 32 test cases / 206 assertions
+### Chapter 5 - 32 test cases / 212 assertions
 
 Covering:
 
@@ -739,7 +831,7 @@ Covering:
   book says it should
 * **error state** - that building and printing trees reports no errors
 
-### Chapter 6 - 83 test cases / 335 assertions
+### Chapter 6 - 83 test cases / 345 assertions
 
 Covering:
 
@@ -882,9 +974,10 @@ Run a single namespace with:
 ./scripts/test.sh lox.chapter-06-parsing-test
 ./scripts/test.sh lox.chapter-07-evaluating-test
 ./scripts/test.sh lox.chapter-08-statements-test
+./scripts/test.sh lox.chapter-09-control-flow-test
 ```
 
-### Chapter 8 - 38 test cases / 380 assertions
+### Chapter 8 - 38 test cases / 386 assertions
 
 From chapter 8 a Lox program's observable behaviour *is* the lines it printed,
 so most of these assertions run a program and compare its output -
@@ -988,6 +1081,113 @@ only terms a Lox user can see. Covering:
   comma and ternary precedence levels when those are switched on, and chapter
   7's three challenges still behaving correctly now that they are reached
   through statements
+
+### Chapter 9 - 37 test cases / 361 assertions
+
+Control flow is observable only as "which side effects happened, in what
+order", so most of these run a program and compare its printed lines. Two
+things about this chapter needed techniques the earlier suites did not.
+
+**Negative assertions carry the weight.** Several tests assert that something
+did *not* happen - that a short-circuited operand was never evaluated, that
+the untaken branch of an `if` had no effect. A value comparison passes against
+an eager implementation that happens to compute the right answer, so each of
+these is written with a *side effect* instead: a variable the dead code would
+have incremented, or a type error it would have raised. The strongest form is
+`print false and 1 < "two";`, which must print `false` and report nothing -
+an eager `and` would report "Operands must be numbers."
+
+**The `for` desugaring can only be tested on the tree.** A correct `for` and a
+correctly desugared `for` behave identically, so behaviour cannot distinguish
+them. `program-str` can: the suite asserts that the printed tree of
+`for (var i = 0; i < 10; i = i + 1) print i;` is *character-for-character* the
+printed tree of the hand-written `{ var i = 0; while (i < 10) { ... } }`, that
+no `:for` node appears anywhere, and that `interp/executor` has no `:for`
+method and does not need one.
+
+Covering:
+
+* **the new node types (9.2-9.4)** - the three `defineAst` descriptions field
+  by field; that `:logical` has the same fields as `:binary` and is still its
+  own production; that `:if`'s else branch is nullable and an absent one is a
+  missing *node*, not an empty block; that no `:for` node exists; the exact
+  family membership of both `expr` and `stmt` as of this chapter; and that
+  swapping a condition for a body throws at construction, which is the mistake
+  the book's separate class hierarchies have `javac` catch
+* **`if` (9.2)** - the grammar and the printed tree with and without an `else`;
+  that a declaration is *not* a legal branch (chapter 8's
+  declaration/statement split finally doing something) while a block is; that
+  chapter 7's truthiness rules decide, so `0` and `""` take the then branch;
+  that the untaken branch has no effect *and* that a runtime error in it never
+  fires; and that the condition is evaluated exactly once
+* **the dangling else** - the tree showing the `else` bound to the inner `if`,
+  all four truth-table combinations of the book's own
+  `if (first) if (second) ... else ...` riddle behaving accordingly, and braces
+  being the way to attach it to the outer `if` instead
+* **the logical operators (9.3)** - that they build `:logical` and never
+  `:binary`; left-associativity; `or` looser than `and`, both looser than
+  equality, both tighter than assignment, and all of it agreeing with the
+  declared `precedence-order`; that they return an *operand* rather than a
+  boolean, over both operators and eight operand combinations each; the
+  default-value idiom; and that `binary-levels` deliberately does not list
+  them, which is what keeps challenge 6.3's error productions from claiming
+  them
+* **short-circuiting** - that each operator skips its right operand exactly
+  when the left settles the question, by side effect and by suppressed runtime
+  error; that the error *does* fire when the operand is reached, so the
+  previous assertion is not passing for the wrong reason; that the left
+  operand is always evaluated exactly once; and that it composes through a
+  chain
+* **`while` (9.4)** - the grammar; looping to exhaustion; zero iterations for
+  a condition false at the start; that the condition is re-evaluated every
+  iteration (the only reason a loop can terminate); a fresh scope per
+  iteration for a block body; a runtime error in the body stopping the loop
+  and being reported; and 100,000 iterations completing, which is what makes
+  the Turing-completeness claim real rather than nominal
+* **`for` and its desugaring (9.5, 9.5.1)** - the tree-equality test described
+  above; the exact shape spelled out; every one of the eight combinations of
+  omitted clauses producing a tree with no wrapping it did not earn; an
+  omitted condition becoming the literal `true`; the increment landing *after*
+  the body in a block with it; clause execution order verified by a log string
+  built with assignments (`print` is a statement in Lox, so the clauses cannot
+  print); the loop variable scoped to the loop and an outer one shadowed
+  rather than overwritten; nested loops; and a runtime error in a clause
+* **Turing-completeness (9.1)** - the chapter's own Fibonacci-below-10000
+  program asserted line by line; 500 iterations from three lines of source; a
+  loop whose trip count is computed at run time; FizzBuzz (with divisibility
+  tracked by counters, since Lox has only floating-point division and no
+  modulo - itself a small demonstration that with branching and looping a
+  missing *operator* stops being a missing *capability*); and `else if` chains
+* **errors** - every new message by exact text, including the pairs that are
+  easy to swap (`"Expect ')' after if condition."` vs `"Expect ')' after
+  condition."`); that `for (;)` fails in the condition position rather than at
+  the semicolon; that a missing body at EOF is an error and not a crash; that
+  `for`, `if` and `while` are synchronization points, so two unrelated errors
+  in one file are both reported; and that parsing terminates on twelve
+  truncated control-flow fragments
+* **challenge 9.3 (`break`)** - six `deftest`s: that with the switch off
+  `break` is an ordinary identifier and `var break = 1;` runs; the production
+  and its required semicolon; that `break` outside a loop is a syntax error at
+  the top level, in a bare block, inside an `if`, and *after* a loop has
+  closed (so the depth is restored, not left raised); that nothing executes at
+  all, since it is a syntax error; that the loop depth is a count rather than
+  a flag, so an outer loop's body stays legal after an inner loop closes; that
+  it exits only the innermost loop, skips the rest of the body, skips a `for`
+  increment, and discards the block scope on the way out; and that the break
+  signal does **not** swallow real runtime errors - a bug that would pass
+  every test of `break` itself, which is why it has three of its own
+* **interaction with the earlier chapters' switches** - where `?:` and `,`
+  sit relative to `or`/`and` when challenges 6.1 and 6.2 are on; that
+  challenge 6.3 fires at a statement boundary but *not* inside a condition
+  (both halves, so neither can drift into the other); challenges 7.2, 7.3 and
+  8.2 reached through control flow; and challenge 8.1's REPL classifying a
+  `while` loop as a statement to execute rather than an expression to echo
+* **the pipeline end to end** - one program using all four constructs; tokens,
+  tree and output agreeing for the same source; all four earlier stage flags
+  still producing their own chapter's output; exit codes 65 and 70 still
+  driven by chapter 9 errors; and `examples/ch09_control_flow.lox` parsing and
+  running clean
+
 ## Note on AI Usage:
 
 AI has been used to re-organize code I have written by hand, help me with documentation and comment insertions. Unit tests, interpreter logic writing, and decisions were solely made by me.

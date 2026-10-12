@@ -70,9 +70,10 @@
 ;;;;      GenerateAst.defineAst(...)        (define-ast expr {...})
 ;;;;
 ;;;; Later chapters extend the grammar (chapter 8 adds `variable`/`assign` plus
-;;;; a whole `stmt` family, 9 `logical`, 10 `call`, 12 `get`/`set`/`this`, 13
-;;;; `super`). Each is one more entry in the `define-ast` map below - no other
-;;;; file has to change in order to *declare* it.
+;;;; a whole `stmt` family, 9 `logical` plus `if`/`while`, 10 `call`, 12
+;;;; `get`/`set`/`this`, 13 `super`). Each is one more entry in the
+;;;; `define-ast` map below - no other file has to change in order to
+;;;; *declare* it.
 ;;;;
 ;;;; UPDATED IN CHAPTER 6: `:conditional` was added for challenge 6.2's ternary
 ;;;; operator. The four productions listed above are still exactly chapter 5's;
@@ -111,6 +112,34 @@
 ;;;; plus `check-field!`: a `:stmt` handed to an `:expr` field throws where the
 ;;;; node is built, which is the same error javac would report, at the same
 ;;;; point in the pipeline.
+;;;;
+;;;; --------------------------------------------------------------------------
+;;;; UPDATED IN CHAPTER 9 - Control Flow
+;;;; --------------------------------------------------------------------------
+;;;;
+;;;; If chapter 8 was the test of the claim that a new production costs one
+;;;; entry, chapter 9 is the receipt. It adds four node types across both
+;;;; families - `:logical` (9.3), `:if` (9.2), `:while` (9.4) and challenge
+;;;; 9.3's `:break` - and one new field kind, `:stmt-or-nil`, for the nullable
+;;;; `Stmt elseBranch`. Nothing else in this file changed.
+;;;;
+;;;; Two observations this chapter's nodes make concrete.
+;;;;
+;;;; FIRST: shape is not meaning. `:logical` has byte-for-byte the same fields
+;;;; as `:binary`, and `:if` has the same three children as challenge 6.2's
+;;;; `:conditional`. Both pairs stay distinct, because what separates them is
+;;;; *when the children are evaluated*, and that is the thing a visitor
+;;;; dispatches on. The book makes the same call for the same reason (9.3:
+;;;; "I think it's cleaner to define a new class for these operators so that
+;;;; they get their own visit method"), and chapter 8's `:expression`/`:print`
+;;;; pair was the first instance of it.
+;;;;
+;;;; SECOND: not every construct needs a node. The C-style `for` loop gets no
+;;;; node at all. Section 9.5.1 desugars it in the parser into the `:block`,
+;;;; `:var` and `:while` nodes that already exist, so the interpreter supports
+;;;; `for` without a single line mentioning it. A node type is a claim that
+;;;; the back end must know about something, and `for` is a claim the front
+;;;; end can discharge on its own.
 ;;;; =============================================================================
 (ns lox.ast
   (:require [clojure.string :as str]
@@ -144,10 +173,23 @@
                   that \"implicitly nil\" (section 8.3.1) and challenge 8.2's
                   \"uninitialized is an error\" can tell the two apart.
     :stmt         `Stmt body`; first needed by chapter 9's `if` and `while`.
-    :stmts        the book's `List<Stmt> statements` on `Stmt.Block`."
+    :stmts        the book's `List<Stmt> statements` on `Stmt.Block`.
+
+  ADDED IN CHAPTER 9. One more, and for exactly the reason `:expr-or-nil` was
+  added in chapter 8 - a nullable child:
+
+    :stmt-or-nil  the book's `Stmt elseBranch` on `Stmt.If`. \"It detects an
+                  else clause by looking for the preceding else keyword. If
+                  there isn't one, the elseBranch field in the syntax tree is
+                  null.\" An absent else branch is a missing *node*, which is
+                  what the interpreter's `elseBranch != null` test asks about;
+                  storing a `block-stmt []` there instead would run an empty
+                  scope on every falsey condition and, worse, make \"no else\"
+                  and \"else {}\" indistinguishable to the printer."
   {:expr        [(fn [x] (expr? x))               "an expression node"]
    :expr-or-nil [(fn [x] (or (nil? x) (expr? x))) "an expression node or nil"]
    :stmt        [(fn [x] (stmt? x))               "a statement node"]
+   :stmt-or-nil [(fn [x] (or (nil? x) (stmt? x))) "a statement node or nil"]
    :stmts       [(fn [x] (and (sequential? x) (every? stmt? x)))
                  "a sequence of statement nodes"]
    :token       [(fn [x] (tok/token? x))          "a token"]
@@ -155,7 +197,7 @@
 
 (def child-field-kinds
   "The field kinds that hold *other nodes*, and so are traversed by `children`."
-  #{:expr :expr-or-nil :stmt :stmts})
+  #{:expr :expr-or-nil :stmt :stmt-or-nil :stmts})
 
 ;;; ---------------------------------------------------------------------------
 ;;; The family registry
@@ -374,7 +416,37 @@
    ;; `(assign <some expr> v)` at construction time, so the distinction the
    ;; book draws in prose is enforced by the node itself.
    :variable [[:token name]]
-   :assign   [[:token name] [:expr value]]})
+   :assign   [[:token name] [:expr value]]
+
+   ;; ---------------------------------------------------------------------
+   ;; Chapter 9 - Control Flow, section 9.3
+   ;;
+   ;;   "Logical  : Expr left, Token operator, Expr right"
+   ;;
+   ;; The fields are *identical* to `:binary`, and the book addresses that
+   ;; head on:
+   ;;
+   ;;   "We could reuse the existing Expr.Binary class for these two new
+   ;;    expressions since they have the same fields. But then
+   ;;    visitBinaryExpr() would have to check to see if the operator is one
+   ;;    of the logical operators and use a different code path to handle the
+   ;;    short circuiting. I think it's cleaner to define a new class for
+   ;;    these operators so that they get their own visit method."
+   ;;
+   ;; That argument is if anything stronger here than in Java. A visitor is a
+   ;; map from node type to function, so a node type *is* the dispatch: two
+   ;; node types with the same shape cost one map entry, while one node type
+   ;; with two behaviours costs an `if` on the operator token inside the
+   ;; evaluator - re-deciding at run time something the parser already knew.
+   ;;
+   ;; This is the same split, for the same reason, as `:expression` versus
+   ;; `:print` in chapter 8: shape is not meaning. And it is the third node
+   ;; whose justification is *when its children are evaluated* rather than
+   ;; what they are - `:conditional` from challenge 6.2, `:if` below, and
+   ;; this. Short-circuiting is control flow, which is why these two
+   ;; operators waited until this chapter instead of joining the binary
+   ;; operators in chapter 7.
+   :logical  [[:expr left] [:token operator] [:expr right]]})
 
 ;;; ---------------------------------------------------------------------------
 ;;; The chapter 8 statement grammar - section 8.1.1
@@ -412,7 +484,63 @@
   {:block      [[:stmts statements]]
    :expression [[:expr expression]]
    :print      [[:expr expression]]
-   :var        [[:token name] [:expr-or-nil initializer]]}
+   :var        [[:token name] [:expr-or-nil initializer]]
+
+   ;; ---------------------------------------------------------------------
+   ;; Chapter 9 - Control Flow
+   ;;
+   ;;   "If    : Expr condition, Stmt thenBranch, Stmt elseBranch"  (9.2)
+   ;;   "While : Expr condition, Stmt body"                         (9.4)
+   ;;
+   ;; The book points at these two declarations as the payoff for having
+   ;; kept expressions and statements in separate families at all:
+   ;;
+   ;;   "Here you can see why it's nice to have separate base classes for
+   ;;    expressions and statements. The field declarations make it clear
+   ;;    that the condition is an expression and the body is a statement."
+   ;;
+   ;; `check-field!` makes that more than documentation: `(while-stmt cond
+   ;; body)` with the two arguments swapped throws where the node is built.
+   ;;
+   ;; Two shapes are worth reading closely.
+   ;;
+   ;; `:if`'s else branch is `:stmt-or-nil`, and the `then`/`else` fields are
+   ;; `:stmt` rather than `:stmts` - a *single* statement each, which is
+   ;; exactly what the grammar says (`"if" "(" expression ")" statement
+   ;; ( "else" statement )?`). `if (a) print 1;` has no block anywhere in it,
+   ;; and a braced body is a `:block` statement that happens to be the one
+   ;; statement. Chapter 8's `declaration`/`statement` split is what makes
+   ;; that safe: the branch is a `statement`, so `if (a) var b = 1;` cannot
+   ;; parse, and there is no scope here for a declaration to be lost in.
+   ;;
+   ;; `:while` stores the condition as a node, *not* a thunk, because the
+   ;; interpreter re-walks that subtree on every iteration. That is the
+   ;; whole mechanism by which a loop can terminate: a tree is re-evaluated,
+   ;; so the same syntax yields a different value once the environment has
+   ;; changed under it.
+   ;;
+   ;; There is deliberately NO `:for` node. Section 9.5.1 desugars the C-style
+   ;; `for` into `:block` / `:var` / `:while` in the *parser*, so the back end
+   ;; never learns the construct exists. See `lox.parser/parse-for-statement`.
+   :if         [[:expr condition] [:stmt then-branch] [:stmt-or-nil else-branch]]
+   :while      [[:expr condition] [:stmt body]]
+
+   ;; Challenge 9.3 - `break`.
+   ;;
+   ;;   "The syntax is a break keyword followed by a semicolon. It should be
+   ;;    a syntax error to have a break statement appear outside of any
+   ;;    enclosing loop."
+   ;;
+   ;; The node is always *defined* - a node family cannot be switched on and
+   ;; off, and every visitor must stay total - but it is only ever *built*
+   ;; when `lox.parser/*allow-break?*` is on, because `break` is not a
+   ;; reserved word in the book's Lox. See docs/chapter09-challenges.md.
+   ;;
+   ;; It carries the `break` token and nothing else. There is nothing to
+   ;; compute, so the token is there purely so that "'break' must be inside
+   ;; a loop." can be reported against a line number - the same reason
+   ;; `:variable` holds a token rather than a string in chapter 8.
+   :break      [[:token keyword]]}
   {:suffix "-stmt"})
 
 ;;; ---------------------------------------------------------------------------

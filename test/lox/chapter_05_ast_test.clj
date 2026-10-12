@@ -329,13 +329,18 @@
                                   (:binary [e] 1)
                                   (:literal [e] 2)))]
       (is (some? e) "expansion should have thrown")
-      ;; Chapter 6 added :conditional to the family and chapter 8 added
-      ;; :variable and :assign, so an incomplete visitor is now missing five
-      ;; productions rather than two. That this number keeps changing *without*
-      ;; anything in lox.ast changing except declaration lines is the point of
-      ;; the design - and that every real visitor had to be updated is the
-      ;; compile-time guarantee the Java interface was there to provide.
-      (is (= #{:grouping :unary :conditional :variable :assign}
+      ;; Chapter 6 added :conditional to the family, chapter 8 added
+      ;; :variable and :assign, and chapter 9 added :logical, so an
+      ;; incomplete visitor is now missing six productions rather than two.
+      ;; That this number keeps changing *without* anything in lox.ast
+      ;; changing except declaration lines is the point of the design - and
+      ;; that every real visitor had to be updated is the compile-time
+      ;; guarantee the Java interface was there to provide.
+      ;;
+      ;; This assertion is therefore meant to be edited by later chapters,
+      ;; and the edit is the evidence: a chapter that adds a production and
+      ;; does not break this test did not actually add it to the family.
+      (is (= #{:grouping :unary :conditional :variable :assign :logical}
              (set (:missing (ex-data e)))))))
 
   (testing "a visitor naming a node type that does not exist is rejected"
@@ -344,6 +349,7 @@
                                   (:literal [e] 1) (:unary [e] 1)
                                   (:conditional [e] 1)
                                   (:variable [e] 1) (:assign [e] 1)
+                                  (:logical [e] 1)      ; chapter 9
                                   (:nonsense [e] 1)))]
       (is (some? e) "expansion should have thrown")
       (is (= [:nonsense] (:unknown (ex-data e))))))
@@ -358,7 +364,8 @@
                                (:binary [e] 1) (:grouping [e] 2)
                                (:literal [e] 3) (:unary [e] 4)
                                (:conditional [e] 5)
-                               (:variable [e] 6) (:assign [e] 7)))
+                               (:variable [e] 6) (:assign [e] 7)
+                               (:logical [e] 8)))   ; chapter 9
           [head vname doc body] form]
       (is (= 'def head))
       (is (= 'complete vname))
@@ -374,7 +381,8 @@
                        (:unary       [e] :u)
                        (:conditional [e] :c)
                        (:variable    [e] :v)
-                       (:assign      [e] :a))
+                       (:assign      [e] :a)
+                       (:logical     [e] :o))   ; chapter 9
                      built-here))]
     (is (= :l (ast/accept (ast/literal 1.0) v)))
     (is (= :b (ast/accept (ast/binary (ast/literal 1.0)

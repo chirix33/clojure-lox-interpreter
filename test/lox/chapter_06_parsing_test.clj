@@ -334,9 +334,28 @@
               (u/parse-str "0.1 * (0.2 * 0.3)")))))
 
 (deftest precedence-order-is-declared-loosest-first
+  ;; `precedence-order` describes the *current* language, so later chapters
+  ;; widen it: chapter 8 inserted :assignment and chapter 9 the two logical
+  ;; levels. What chapter 6 actually claims - and what this test still has to
+  ;; check - is that its own six levels appear in the book's relative order
+  ;; and that nothing has been slipped in between them. Asserting the full
+  ;; table as well keeps the test honest about what the whole table is.
   (testing "the table as data matches section 6.1's table as prose"
-    (is (= [:expression :equality :comparison :term :factor :unary :primary]
+    (is (= [:equality :comparison :term :factor :unary :primary]
+           (vec (drop-while (complement #{:equality})
+                            parser/precedence-order)))))
+
+  (testing "the full table, loosest first, as of chapter 9"
+    (is (= [:expression :assignment :logic-or :logic-and
+            :equality :comparison :term :factor :unary :primary]
            parser/precedence-order)))
+
+  (testing "chapter 9's two logical levels sit between assignment and equality"
+    (is (= [:logic-or :logic-and]
+           (mapv :rule parser/logical-levels)))
+    (let [idx (zipmap parser/precedence-order (range))]
+      (is (< (idx :assignment) (idx :logic-or) (idx :logic-and)
+             (idx :equality)))))
 
   (testing "each binary level lists exactly the book's operators"
     (is (= [[:equality   [:bang-equal :equal-equal]]
@@ -753,10 +772,25 @@
 
 (deftest documented-grammar-matches-the-implementation
   (testing "every rule named in the precedence table has a production"
+    ;; CHAPTER 9: the rule *keywords* are hyphenated because that is how
+    ;; Clojure keywords are spelled, while the grammar text uses the book's
+    ;; `logic_or` / `logic_and` with underscores. Normalising here keeps one
+    ;; spelling in each place it belongs rather than making the data ugly to
+    ;; satisfy the test.
     (doseq [rule parser/precedence-order
-            :let [head (name rule)]]
+            :let [head (str/replace (name rule) "-" "_")]]
       (is (some #(str/starts-with? % head) parser/grammar)
           (str "no production for " head))))
+
+  (testing "chapter 9's logical productions are documented and quote their own
+            operators"
+    (doseq [{:keys [rule token]} parser/logical-levels
+            :let [line (first (filter #(str/starts-with?
+                                        % (str/replace (name rule) "-" "_"))
+                                      parser/grammar))]]
+      (is (some? line) (str "no production for " rule))
+      (is (str/includes? line (str "\"" (name token) "\""))
+          (str rule " should quote the " token " operator"))))
 
   (testing "each binary level's production quotes exactly its own operators"
     (doseq [{:keys [rule operators]} parser/binary-levels

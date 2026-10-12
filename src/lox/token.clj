@@ -44,6 +44,15 @@
     :and :class :else :false :fun :for :if :nil :or
     :print :return :super :this :true :var :while
 
+    ;; Chapter 9 (challenge 9.3) - `break`.
+    ;; Not part of the book's lexical grammar: in the book's Lox `break` is an
+    ;; ordinary identifier, so `var break = 1;` is a legal program. Reserving
+    ;; a word is therefore *not* a harmless superset the way `?` and `:` were
+    ;; in chapter 6 - it takes a name away from every program that used it -
+    ;; which is why the scanner only produces this token when
+    ;; `*allow-break?*` is on. See docs/chapter09-challenges.md.
+    :break
+
     :eof})
 
 (def keywords
@@ -68,6 +77,42 @@
    "true"   :true
    "var"    :var
    "while"  :while})
+
+;;; ---------------------------------------------------------------------------
+;;; Challenge 9.3 - the `break` keyword
+;;; ---------------------------------------------------------------------------
+
+(def ^:dynamic *allow-break?*
+  "Challenge 9.3. When true, `break` scans as the `:break` keyword instead of
+  as an identifier, which is what lets the parser recognise a break statement.
+
+  The switch lives here, in the lexical layer, rather than beside the parser's
+  other grammar switches, because reserving a word is a *scanning* decision
+  and it has to be made before the parser ever sees the token. The parser's
+  break production reads this same var - there is one switch, not two that
+  could disagree.
+
+  Off by default, for the reason given on `:break` in `token-types`: the
+  book's Lox has no `break`, and turning the word into a keyword silently
+  breaks any program that used it as a name."
+  false)
+
+(def break-keyword
+  "The one entry challenge 9.3 adds to the reserved-word table."
+  {"break" :break})
+
+(defn keyword-type
+  "The token type for an already-scanned identifier `lexeme`: its keyword type
+  if it is a reserved word, else `:identifier`.
+
+  Book: the `keywords.get(text)` / `if (type == null) type = IDENTIFIER`
+  pair in `Scanner.identifier()`. Lifted into a function of its own in
+  chapter 9 so that the reserved-word *set* can depend on a switch while the
+  scanner stays a plain table lookup."
+  [lexeme]
+  (or (get keywords lexeme)
+      (when *allow-break?* (get break-keyword lexeme))
+      :identifier))
 
 (defn make-token
   "Build a token map. Mirrors the book's `Token` constructor.

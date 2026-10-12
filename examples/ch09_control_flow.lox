@@ -1,0 +1,138 @@
+// =============================================================================
+// Chapter 9 - Control Flow
+//
+// Everything this chapter adds, in one runnable program:
+//
+//   * if / else            section 9.2
+//   * and / or             section 9.3   (short-circuiting)
+//   * while                section 9.4
+//   * for                  sections 9.5 / 9.5.1 (desugared in the parser)
+//
+// Run it with:
+//
+//   ./scripts/lox.sh examples/ch09_control_flow.lox
+//
+// and see the desugaring of every `for` loop below with:
+//
+//   ./scripts/lox.sh --ast examples/ch09_control_flow.lox
+//
+// Before this chapter, a Lox program could only do a fixed amount of work:
+// to make it run twice as long you had to write twice as much of it. The last
+// section below is the proof that that is no longer true.
+// =============================================================================
+
+// --- 9.2 Conditional execution ----------------------------------------------
+
+print "== if ==";
+
+if (true) print "the then branch runs";
+if (false) print "this never prints";
+if (false) print "no"; else print "the else branch runs";
+
+// Chapter 7's truthiness rules decide, not C's: only nil and false are falsey,
+// so 0 and the empty string both take the then branch.
+if (0) print "0 is truthy in Lox";
+if ("") print "so is the empty string";
+
+var hungry = true;
+var tired = false;
+if (hungry and !tired) {
+  print "a block is a single statement, so it can be a branch";
+}
+
+// `else if` is not a construct - it is an `if` whose else branch happens to be
+// another `if`. That works because a branch is one statement, and because the
+// dangling `else` binds to the nearest preceding `if`.
+var n = 0;
+if (n < 0)       print "negative";
+else if (n == 0) print "zero";
+else             print "positive";
+
+// --- 9.3 Logical operators --------------------------------------------------
+
+print "== and / or ==";
+
+// They return an *operand*, not a boolean - whichever one decided the result.
+print "hi" or 2;          // "hi"  : the left operand was truthy
+print nil or "yes";       // "yes" : the left was falsey, so the right decided
+print false and "never";  // false : the left settled it
+
+// Which makes `or` the default-value idiom.
+var nickname;
+print nickname or "anonymous";
+
+// And they short-circuit, which is why they count as control flow. The right
+// operand of each line below is never evaluated - note that neither reports a
+// runtime error, although both would if they ran.
+print false and 1 < "two";
+print true or 1 + nil;
+
+// `or` binds looser than `and`, as in C.
+print true or false and false;   // true, i.e. true or (false and false)
+
+// --- 9.4 while --------------------------------------------------------------
+
+print "== while ==";
+
+var i = 0;
+while (i < 3) {
+  print i;
+  i = i + 1;
+}
+
+// The condition is re-evaluated every time round, which is the only reason a
+// loop can ever stop: the same subtree yields a different value once the body
+// has changed the environment under it.
+var countdown = 3;
+while (countdown > 0) {
+  print countdown;
+  countdown = countdown - 1;
+}
+print "liftoff";
+
+// --- 9.5 for ----------------------------------------------------------------
+
+print "== for ==";
+
+for (var j = 0; j < 3; j = j + 1) print j;
+
+// All three clauses are optional. This one has only a condition.
+var k = 0;
+for (; k < 2 ;) k = k + 1;
+print k;
+
+// The loop variable is scoped to the loop, because the desugaring wraps the
+// whole thing in a block. Uncommenting the next line would be a runtime
+// error - "Undefined variable 'j'".
+//
+//   print j;
+
+// Nested loops: the inner one runs to completion each time round the outer.
+for (var row = 1; row <= 3; row = row + 1) {
+  var acc = 0;
+  for (var col = 1; col <= 3; col = col + 1) {
+    acc = acc + row * col;
+  }
+  print acc;
+}
+
+// --- 9.1 Turing-completeness, cashed in -------------------------------------
+
+print "== the chapter's own example ==";
+
+// The Fibonacci numbers below 10000. Twenty-one lines of output from six lines
+// of source - the thing chapter 8 could not do at any length.
+var a = 0;
+var temp;
+
+for (var b = 1; a < 10000; b = temp + b) {
+  print a;
+  temp = a;
+  a = b;
+}
+
+// And one more loop whose running time has nothing to do with how long the
+// program is: the sum of 1..500.
+var sum = 0;
+for (var m = 1; m <= 500; m = m + 1) sum = sum + m;
+print sum;

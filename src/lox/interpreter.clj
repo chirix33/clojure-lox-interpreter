@@ -188,6 +188,54 @@
 ;;;;          `lox.environment/*error-on-uninitialized?*`             off
 ;;;;   8.3  `var a = a + 2;` inside a block - a written answer, plus tests
 ;;;;        pinning down what this implementation actually does.
+;;;;
+;;;; =============================================================================
+;;;; UPDATED IN CHAPTER 9 - Control Flow
+;;;; =============================================================================
+;;;;
+;;;; Chapter 9 is mostly a parser chapter; the interpreter's share of it is
+;;;; four small clauses. What they have in common is the thing that makes them
+;;;; control flow at all: unlike every clause before them, they do **not**
+;;;; evaluate all of their children.
+;;;;
+;;;;   :logical  (9.3)  evaluates the right operand only if the left did not
+;;;;                    already settle the answer, and returns an *operand*
+;;;;                    rather than a boolean
+;;;;   :if       (9.2)  evaluates the condition and then at most one branch
+;;;;   :while    (9.4)  re-evaluates the condition and body until it goes
+;;;;                    falsey - the first construct whose running time is not
+;;;;                    a function of the program's length
+;;;;   :break    (9.3)  challenge 9.3; throws a tagged signal that `:while`
+;;;;                    catches
+;;;;
+;;;; The book puts the point sharply, about `:if`: "Most other syntax trees
+;;;; always evaluate their subtrees. Here, we may not evaluate the then or else
+;;;; statement. If either of those has a side effect, the choice not to
+;;;; evaluate it becomes user visible." That user-visibility is why these
+;;;; operators are *control flow* and not an optimisation, and why `and`/`or`
+;;;; waited for this chapter instead of joining `eval-binary` in chapter 7.
+;;;;
+;;;; Two things are *not* here, and both are deliberate:
+;;;;
+;;;;   * THERE IS NO `for`. Section 9.5.1 desugars the C-style `for` loop in
+;;;;     the parser into `:block` / `:var` / `:while`, so this file contains no
+;;;;     mention of it. `lox.parser/parse-for-statement` is the whole feature.
+;;;;
+;;;;   * ITERATION COSTS NO STACK. `:while` uses `clojure.core/while`, which is
+;;;;     a `loop`/`recur`, so a Lox loop is bounded by time rather than by the
+;;;;     JVM stack. That is what makes section 9.1's Turing-completeness claim
+;;;;     real rather than nominal; the chapter 9 suite drives one loop for
+;;;;     100,000 iterations to pin it down. (Lox *recursion* will be
+;;;;     stack-bounded from chapter 10 - see challenge 9.2 in
+;;;;     docs/chapter09-challenges.md.)
+;;;;
+;;;; --------------------------------------------------------------------------
+;;;; Challenges (see docs/chapter09-challenges.md)
+;;;; --------------------------------------------------------------------------
+;;;;
+;;;;   9.1  conditional execution from functions / dynamic dispatch - written
+;;;;   9.2  looping the same way, and the optimisation it needs - written
+;;;;   9.3  `break` statements        `lox.token/*allow-break?*`          off
 ;;;; =============================================================================
 (ns lox.interpreter
   (:require [lox.ast :as ast]
@@ -597,7 +645,43 @@
   ;; writes the global rather than quietly creating a local. Lox has no
   ;; implicit declaration; the chapter's design note argues the case at length.
   (:assign   [{:keys [name value]}]
-             (env/assign! *environment* name (evaluate value))))
+             (env/assign! *environment* name (evaluate value)))
+
+  ;; 9.3. The short-circuiting operators, and the second clause in this
+  ;; visitor (after challenge 6.2's `:conditional`) that does *not* evaluate
+  ;; all of its children.
+  ;;
+  ;;   "If, after evaluating the left operand, we know what the result of the
+  ;;    logical expression must be, we don't evaluate the right operand."
+  ;;
+  ;; Two decisions are packed into the three lines below.
+  ;;
+  ;; WHAT IS RETURNED. Not `true` or `false` - the *operand itself*:
+  ;;
+  ;;   print "hi" or 2;     // "hi"
+  ;;   print nil or "yes";  // "yes"
+  ;;
+  ;; "Since Lox is dynamically typed, we allow operands of any type and use
+  ;; truthiness to determine what each operand represents. We apply similar
+  ;; reasoning to the result. Instead of promising to literally return true or
+  ;; false, a logic operator merely guarantees it will return a value with
+  ;; appropriate truthiness." This is the Lua/Python/JavaScript rule, and it
+  ;; is what makes `a or "default"` a usable idiom.
+  ;;
+  ;; WHEN THE RIGHT OPERAND RUNS. Only when the left one did not settle the
+  ;; question. The result is that a type error on the right-hand side of a
+  ;; short-circuited operator never happens at all: `false and 1 < "two"`
+  ;; evaluates to `false` rather than reporting "Operands must be numbers.",
+  ;; because the comparison is never reached. That is user-visible behaviour
+  ;; and not an optimisation, which is the whole reason these two operators
+  ;; count as control flow and waited for this chapter rather than joining
+  ;; `eval-binary` in chapter 7.
+  (:logical  [{:keys [left operator right]}]
+             (let [l        (evaluate left)
+                   ;; Did the left operand already settle the result? For `or`
+                   ;; a truthy left settles it; for `and` a falsey one does.
+                   decided? (if (= :or (:type operator)) (truthy? l) (falsey? l))]
+               (if decided? l (evaluate right)))))
 
 (defn evaluate
   "Book: `Interpreter.evaluate`. Evaluate one expression node to a Lox value.
@@ -632,6 +716,52 @@
   (binding [*environment* environment]
     (doseq [statement statements]
       (execute statement))))
+
+;;; ---------------------------------------------------------------------------
+;;; Challenge 9.3 - unwinding out of a loop
+;;;
+;;; "At runtime, a break statement causes execution to jump to the end of the
+;;;  nearest enclosing loop and proceeds from there. Note that the break may
+;;;  be nested inside other blocks and if statements that also need to be
+;;;  exited."
+;;;
+;;; "Nested inside other blocks" is the hard part, and it rules out returning
+;;; a value: `execute` would have to return a signal, every caller that runs a
+;;; sequence of statements would have to check it, and `execute-block` would
+;;; have to propagate it - a change to every statement form in order to
+;;; support one. Chapter 8's `execute-block` already uses an exception-shaped
+;;; mechanism (`binding`) to restore a scope during an unwind, so the control
+;;; flow we need is exactly what the host's exception handling already does.
+;;; This is the same argument section 6.3.3 makes for parse errors, and the
+;;; one the book will make again in chapter 10 for `return`, where the
+;;; interpreter grows a `Return` exception for the identical reason.
+;;;
+;;; Two details that matter.
+;;;
+;;; The signal is a *pre-allocated singleton*. It carries no payload - a
+;;; `break` has nothing to say beyond "stop" - and allocating a fresh
+;;; exception per break would pay for a stack trace on every iteration of
+;;; every loop that uses one. `ex-info` does not fill in a stack trace lazily,
+;;; so the one allocation here is the whole cost.
+;;;
+;;; It is tagged and re-thrown if it does not match. Lox runtime errors are
+;;; `ex-info` too (`lox.errors/runtime-error-ex`), so a `catch ExceptionInfo`
+;;; around a loop body would otherwise swallow "Operands must be numbers."
+;;; and silently exit the loop instead of reporting it - a bug that no test
+;;; of `break` itself would ever catch, which is why there is a test for a
+;;; runtime error inside a loop body.
+;;; ---------------------------------------------------------------------------
+
+(def ^:private break-signal
+  "The singleton exception thrown by a `break` statement and caught by the
+  enclosing loop. Not a Lox-visible error: it never reaches a user."
+  (ex-info "break" {:type ::break}))
+
+(defn break-signal?
+  "True if `e` is the challenge 9.3 break signal rather than a real error."
+  [e]
+  (and (instance? clojure.lang.ExceptionInfo e)
+       (= ::break (:type (ex-data e)))))
 
 (ast/defvisitor executor :stmt
   "Book: `class Interpreter implements Stmt.Visitor<Void>`.
@@ -675,7 +805,63 @@
   ;; through with its `volume` example.
   (:block      [{:keys [statements]}]
                (execute-block statements (env/make-environment *environment*))
-               nil))
+               nil)
+
+  ;; 9.2. "The interpreter implementation is a thin wrapper around the
+  ;; self-same Java code" - and around the self-same Clojure `if` here.
+  ;;
+  ;; The book draws out what makes this clause different from every clause
+  ;; above it: "Most other syntax trees always evaluate their subtrees. Here,
+  ;; we may not evaluate the then or else statement. If either of those has a
+  ;; side effect, the choice not to evaluate it becomes user visible." That
+  ;; is the definition of control flow, and it is why `if` needed a node of
+  ;; its own rather than being expressible in terms of the ones we had.
+  ;;
+  ;; `(when (some? else-branch) ...)` is the book's `stmt.elseBranch != null`.
+  ;; A `nil` branch means there was no `else` clause in the source, so there
+  ;; is nothing to execute - as distinct from `else {}`, which is an empty
+  ;; block node and does get executed (opening and discarding a scope).
+  (:if         [{:keys [condition then-branch else-branch]}]
+               (if (truthy? (evaluate condition))
+                 (execute then-branch)
+                 (when (some? else-branch)
+                   (execute else-branch)))
+               nil)
+
+  ;; 9.4. "Like the visit method for if, this visitor uses the corresponding
+  ;; Java feature. This method isn't complex, but it makes Lox much more
+  ;; powerful. We can finally write a program whose running time isn't
+  ;; strictly bound by the length of the source code."
+  ;;
+  ;; The condition is re-evaluated from the tree on every iteration, which is
+  ;; the mechanism by which a loop can ever terminate: the same subtree yields
+  ;; a different value once the body has changed the environment under it. A
+  ;; condition evaluated once and cached would make every loop infinite.
+  ;;
+  ;; `clojure.core/while` is a `loop`/`recur` in disguise, so this does not
+  ;; consume stack per iteration - Lox loops are bounded by time, not by the
+  ;; JVM stack. (Lox *recursion* is bounded by the stack, from chapter 10.)
+  ;;
+  ;; The `try` is challenge 9.3's only addition to the interpreter: a `break`
+  ;; anywhere inside the body - however many blocks and `if`s deep - unwinds
+  ;; to here. Anything that is not the break signal is re-thrown untouched,
+  ;; so a genuine runtime error inside a loop still propagates to `interpret`
+  ;; and still gets reported.
+  (:while      [{:keys [condition body]}]
+               (try
+                 (while (truthy? (evaluate condition))
+                   (execute body))
+                 (catch clojure.lang.ExceptionInfo e
+                   (when-not (break-signal? e) (throw e))))
+               nil)
+
+  ;; Challenge 9.3. The parser has already guaranteed - as a syntax error -
+  ;; that this node only ever appears inside a loop body, so there is always a
+  ;; `:while` handler up the stack to catch this. That guarantee is what lets
+  ;; this clause be one `throw` with no fallback: an uncaught break signal is
+  ;; not a user error to report, it is a bug in the parser's bookkeeping.
+  (:break      [_]
+               (throw break-signal)))
 
 (defn execute
   "Book: `Interpreter.execute`. Run one statement for its effects.

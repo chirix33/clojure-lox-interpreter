@@ -185,11 +185,60 @@
 ;;;; Chapter 6's single-expression entry point is still here, under the name
 ;;;; `parse-one-expression`, because `clox --ast` and the chapter 6 test suite
 ;;;; are both submissions of their own. `parse` is the book's chapter 8 one.
+;;;;
+;;;; =============================================================================
+;;;; UPDATED IN CHAPTER 9 - Control Flow
+;;;; =============================================================================
+;;;;
+;;;; This chapter is almost entirely a parser chapter. Of the four constructs
+;;;; it adds, one needs no interpreter support at all and the other three need
+;;;; three or four lines each, while every one of them needs a production here.
+;;;;
+;;;;   statement -> exprStmt | forStmt | ifStmt | printStmt | whileStmt
+;;;;              | block ;
+;;;;
+;;;;   ifStmt    -> "if" "(" expression ")" statement ( "else" statement )? ;
+;;;;   whileStmt -> "while" "(" expression ")" statement ;
+;;;;   forStmt   -> "for" "(" ( varDecl | exprStmt | ";" )
+;;;;                expression? ";" expression? ")" statement ;
+;;;;
+;;;;   assignment -> IDENTIFIER "=" assignment | logic_or ;
+;;;;   logic_or   -> logic_and ( "or" logic_and )* ;
+;;;;   logic_and  -> equality ( "and" equality )* ;
+;;;;
+;;;; Three things here are worth more than a one-line note, and each has its
+;;;; own commentary at the definition.
+;;;;
+;;;; 1. THE DANGLING ELSE is resolved by doing nothing. The grammar above is
+;;;;    genuinely ambiguous, and `parse-if-statement` disambiguates it the way
+;;;;    every C-family language does - `else` binds to the nearest `if` -
+;;;;    without a line of code to that effect, purely because the innermost
+;;;;    recursive call is the one holding the token stream when the `else`
+;;;;    appears. It is the clearest example in the book of the parser, not the
+;;;;    written grammar, being the language's definition.
+;;;;
+;;;; 2. `for` IS DESUGARED, NOT IMPLEMENTED (section 9.5.1). It produces no
+;;;;    node of its own; `parse-for-statement` rewrites it into the `:block`,
+;;;;    `:var` and `:while` nodes chapter 8 and this chapter already provide,
+;;;;    so `lox.interpreter` contains no mention of `for` whatsoever. This is
+;;;;    the first time the front end *translates* rather than transcribes.
+;;;;
+;;;; 3. THE LOGICAL OPERATORS GET THEIR OWN NODE even though their fields are
+;;;;    identical to `:binary`'s, because they short-circuit, and that is a
+;;;;    difference in semantics rather than shape. The parser does not
+;;;;    implement short-circuiting - "The syntax doesn't care that they
+;;;;    short-circuit. That's a semantic concern." - it just picks the node
+;;;;    type that tells the interpreter which rule to apply.
+;;;;
+;;;; Challenge 9.3 adds `break`, behind `lox.token/*allow-break?*`, with the
+;;;; "must be inside a loop" rule enforced here as a syntax error via the
+;;;; `:loop-depth` field of the parser state. See docs/chapter09-challenges.md.
 ;;;; =============================================================================
 (ns lox.parser
   (:require [lox.ast :as ast]
             [lox.errors :as err]
-            [lox.scanner :as scanner]))
+            [lox.scanner :as scanner]
+            [lox.token :as tok]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Grammar switches - see the challenge notes above
@@ -220,9 +269,18 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn make-parser
-  "Book: `new Parser(tokens)`."
+  "Book: `new Parser(tokens)`.
+
+  CHAPTER 9 adds `:loop-depth`, which the book has no equivalent for because
+  the book has no `break`. Challenge 9.3 requires that `break` outside a loop
+  be a *syntax* error, so the parser has to know whether it is inside one, and
+  \"inside a loop\" is a property of the parse in progress - exactly the kind
+  of thing the rest of this map already holds. Java would reach for a mutable
+  `int loopDepth` field and a try/finally to restore it; threading it through
+  the state map means a rule that fails part-way cannot leave the count wrong,
+  because the caller still holds the old state. See `parse-loop-body`."
   [tokens]
-  {:tokens (vec tokens) :current 0})
+  {:tokens (vec tokens) :current 0 :loop-depth 0})
 
 (defn peek-token
   "Book: `peek()`. The next token, not yet consumed."
@@ -466,17 +524,85 @@
   (binary-parser state))
 
 ;;; ---------------------------------------------------------------------------
+;;; Chapter 9, section 9.3 - the logical operators
+;;;
+;;;   logic_or  -> logic_and ( "or" logic_and )* ;
+;;;   logic_and -> equality  ( "and" equality )* ;
+;;;
+;;; Two new precedence levels, slotted "right between assignment and equality"
+;;; with `or` looser than `and` - mirroring C's `||` and `&&`. (The book's own
+;;; margin note wonders why the two do not simply share a level the way the
+;;; comparison operators do. They do not, in C or here, and chaining
+;;; `a or b and c` as `a or (b and c)` is the behaviour everyone expects.)
+;;;
+;;; These are *shaped* exactly like the four binary levels of chapter 6 - a
+;;; left-associative series - and they are deliberately NOT routed through
+;;; `parse-left-assoc-binary`, because that helper builds `:binary` nodes and
+;;; these must build `:logical` ones. The duplication is three lines and it is
+;;; the honest kind: the two constructs really are different, and section 9.3
+;;; spends a paragraph on why. (`binary-levels` stays the table of operators
+;;; that evaluate both operands, which is what makes it the right table for
+;;; challenge 6.3's error productions to consult and the wrong one for these.)
+;;;
+;;; Short-circuiting does not appear anywhere in this file: "The syntax doesn't
+;;; care that they short-circuit. That's a semantic concern." The parser's only
+;;; job is to produce a node type that tells the interpreter which semantics to
+;;; apply, and the operator token inside it says which of the two.
+;;; ---------------------------------------------------------------------------
+
+(defn- parse-logical-series
+  "Parse a left-associative series of `op-type` operators whose operands are
+  parsed by `operand`, building `:logical` nodes.
+
+  The `:logical` counterpart of `parse-left-assoc-binary`. Factored out
+  because `parse-or` and `parse-and` differ in nothing but their operator and
+  their operand level - which is the book's observation about `or()` and
+  `and()` being near-copies, acted on."
+  [state operand op-type]
+  (loop [[state expr] (operand state)]
+    (if-let [state' (match state op-type)]
+      (let [operator      (previous-token state')
+            [state right] (operand state')]
+        (recur [state (ast/logical expr operator right)]))
+      [state expr])))
+
+(defn parse-and
+  "Book: `and()`.
+
+    logic_and -> equality ( \"and\" equality )* ;"
+  [state]
+  (parse-logical-series state parse-equality :and))
+
+(defn parse-or
+  "Book: `or()`.
+
+    logic_or -> logic_and ( \"or\" logic_and )* ;"
+  [state]
+  (parse-logical-series state parse-and :or))
+
+;;; ---------------------------------------------------------------------------
 ;;; Challenge 6.2 - the ternary conditional operator
 ;;;
-;;;   conditional -> equality ( "?" expression ":" conditional )? ;
+;;;   conditional -> logic_or ( "?" expression ":" conditional )? ;
+;;;
+;;; CHAPTER 9 changed the operand level from `equality` to `logic_or`, which is
+;;; where C puts it: `?:` binds looser than `||` but tighter than `=`, so the
+;;; full chain with both challenge levels enabled is now
+;;;
+;;;   expression -> comma -> assignment -> conditional -> logic_or
+;;;              -> logic_and -> equality -> ...
+;;;
+;;; and `a or b ? c : d` parses as `(a or b) ? c : d`, as it does in C. With
+;;; the challenge switches off the chain is exactly the book's chapter 9 one,
+;;; because `comma` and `conditional` both fall straight through.
 ;;;
 ;;; Two questions the challenge asks, and the answers this encodes:
 ;;;
 ;;; * What precedence is allowed between `?` and `:`? In C, a *full* expression
 ;;;   - the middle operand is unambiguously fenced in by the two tokens, so
 ;;;   nothing needs to be excluded. `a ? b = c : d` is legal C. We use
-;;;   `parse-expression`, which will pick up assignment automatically when
-;;;   chapter 8 adds it.
+;;;   `parse-expression`, which picked up assignment automatically when
+;;;   chapter 8 added it and picks up `or`/`and` the same way now.
 ;;;
 ;;; * Left- or right-associative? Right. `a ? b : c ? d : e` groups as
 ;;;   `a ? b : (c ? d : e)`, which is what makes `else if` chains work. The
@@ -484,9 +610,12 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn parse-conditional
-  "Challenge 6.2. Parse a ternary, or fall through to `equality`."
+  "Challenge 6.2. Parse a ternary, or fall through to `logic_or`.
+
+  CHAPTER 9: the operand level is `parse-or` rather than `parse-equality`, so
+  that the two new logical levels sit *below* the ternary, as in C."
   [state]
-  (let [[state condition] (parse-equality state)]
+  (let [[state condition] (parse-or state)]
     (if-let [state (and *allow-conditional?* (match state :question))]
       (let [[state then-branch] (parse-expression state)
             state               (consume state :colon
@@ -514,8 +643,10 @@
 ;;;
 ;;;   assignment -> IDENTIFIER "=" assignment | conditional ;
 ;;;
-;;; (The book writes `| equality`; `conditional` is the next level down once
-;;; challenge 6.2 is in the picture, and is `equality` when it is switched off.)
+;;; (Chapter 8's book text writes `| equality`; chapter 9 changes it to
+;;; `| logic_or`. `conditional` is the next level down once challenge 6.2 is in
+;;; the picture, and falls straight through to `logic_or` when it is off, so
+;;; this production is the book's either way.)
 ;;; ---------------------------------------------------------------------------
 
 (defn parse-assignment
@@ -732,7 +863,7 @@
 ;;; Chapter 10 is where that pays off.
 ;;; ---------------------------------------------------------------------------
 
-(declare parse-declaration)
+(declare parse-declaration parse-statement parse-var-declaration)
 
 (defn parse-print-statement
   "Book: `printStatement()`.
@@ -785,19 +916,299 @@
       (let [[state stmt] (parse-declaration state)]
         (recur state (if stmt (conj statements stmt) statements))))))
 
+
+;;; ---------------------------------------------------------------------------
+;;; Chapter 9 - Control Flow
+;;;
+;;;   statement -> exprStmt | forStmt | ifStmt | printStmt | whileStmt | block ;
+;;;
+;;;   ifStmt    -> "if" "(" expression ")" statement ( "else" statement )? ;
+;;;   whileStmt -> "while" "(" expression ")" statement ;
+;;;   forStmt   -> "for" "(" ( varDecl | exprStmt | ";" )
+;;;                expression? ";" expression? ")" statement ;
+;;;
+;;; Each branch body is a `statement`, not a `declaration`, which is chapter
+;;; 8's stratification finally earning its keep: `if (a) var b = 1;` does not
+;;; parse, because there would be no answer to the question of what scope `b`
+;;; lives in. A braced body is a `block`, which is a `statement` that contains
+;;; `declaration`s - so the way to declare something in a branch is to open a
+;;; scope for it, which is the only reading that has a sensible answer.
+;;;
+;;; Note what the parentheses around each condition are and are not for. The
+;;; closing one is load-bearing: without a delimiter the parser could not tell
+;;; where the condition expression ends and the body statement begins. The
+;;; opening one does nothing at all, and the book's aside on why it is there
+;;; anyway - Dennis Ritchie wanted a `)` without an unbalanced `(` - is the
+;;; honest answer. Lua and some BASICs use a trailing `then` instead; Go and
+;;; Swift require a braced body and use the `{` as the delimiter.
+;;; ---------------------------------------------------------------------------
+
+(defn parse-loop-body
+  "Parse the body `statement` of a loop, with `:loop-depth` raised for the
+  duration. Returns [state' body] with the *original* depth restored.
+
+  Only challenge 9.3 cares: `break` is legal exactly when this count is
+  positive. The restore is what makes
+
+      while (a) break;   break;
+
+  report the second `break` and not the first, and because the count travels
+  in the threaded state rather than in a mutable field, there is no try/finally
+  to forget - a rule that throws out of here leaves the caller's state, and so
+  the caller's depth, untouched.
+
+  Nesting is counted rather than flagged so that a `break` in an *outer* loop's
+  body remains legal after an inner loop has closed."
+  [state]
+  (let [outer-depth  (:loop-depth state)
+        [state body] (parse-statement (update state :loop-depth inc))]
+    [(assoc state :loop-depth outer-depth) body]))
+
+(defn parse-if-statement
+  "Book: `ifStatement()`.
+
+    ifStmt -> \"if\" \"(\" expression \")\" statement ( \"else\" statement )? ;
+
+  The `if` token has already been consumed.
+
+  THE DANGLING ELSE. `if (a) if (b) x(); else y();` is genuinely ambiguous as
+  a context-free grammar - the `else` could close either `if` - and the fix
+  the book takes is the one every C-family language takes: bind `else` to the
+  nearest preceding `if`. There is no code here that implements that rule,
+  which is the interesting part:
+
+    \"Our parser conveniently does that already. Since ifStatement() eagerly
+     looks for an else before returning, the innermost call to a nested series
+     will claim the else clause for itself before returning to the outer if
+     statements.\"
+
+  The inner call is the one holding the token stream when `else` comes into
+  view, so it takes it. Recursive descent resolves the ambiguity by being
+  recursive descent. The book notes the alternative - a grammar that splits
+  every statement rule into an with-else and a without-else pair - and calls
+  it annoying, which it is.
+
+  A missing `else` leaves the branch nil rather than an empty block; see the
+  `:stmt-or-nil` note in `lox.ast`."
+  [state]
+  (let [state               (consume state :left-paren "Expect '(' after 'if'.")
+        [state condition]   (parse-expression state)
+        state               (consume state :right-paren
+                                     "Expect ')' after if condition.")
+        [state then-branch] (parse-statement state)
+        [state else-branch] (if-let [state' (match state :else)]
+                              (parse-statement state')
+                              [state nil])]
+    [state (ast/if-stmt condition then-branch else-branch)]))
+
+(defn parse-while-statement
+  "Book: `whileStatement()`.
+
+    whileStmt -> \"while\" \"(\" expression \")\" statement ;
+
+  The `while` token has already been consumed. \"The grammar is dead simple
+  and this is a straight translation of it\" - the only thing here that is not
+  in the book is `parse-loop-body` in place of a bare `parse-statement`, which
+  is challenge 9.3's bookkeeping."
+  [state]
+  (let [state             (consume state :left-paren "Expect '(' after 'while'.")
+        [state condition] (parse-expression state)
+        state             (consume state :right-paren
+                                   "Expect ')' after condition.")
+        [state body]      (parse-loop-body state)]
+    [state (ast/while-stmt condition body)]))
+
+;;; ---------------------------------------------------------------------------
+;;; Section 9.5.1 - desugaring the `for` loop
+;;;
+;;; This is the one construct in the chapter that adds no node type and no
+;;; interpreter code. A C-style `for` is syntactic sugar: everything it does
+;;; can be said with the statements we already have, so the parser says it that
+;;; way and the back end never finds out.
+;;;
+;;;   for (var i = 0; i < 10; i = i + 1) print i;
+;;;
+;;; becomes the tree for
+;;;
+;;;   {
+;;;     var i = 0;
+;;;     while (i < 10) {
+;;;       print i;
+;;;       i = i + 1;
+;;;     }
+;;;   }
+;;;
+;;; Three wrappings, built from the inside out because each one encloses the
+;;; last - which is why the book builds them in reverse source order:
+;;;
+;;;   1. the increment is appended to the body, inside a block, so that it runs
+;;;      at the end of every iteration;
+;;;   2. condition + body become a `while`, with `true` substituted for an
+;;;      omitted condition to give `for (;;)` its infinite loop;
+;;;   3. the initializer is prepended, inside a second block, so that it runs
+;;;      once - and so that a `var` initializer is scoped to the loop and not
+;;;      to the enclosing block. That outer block is what makes `i` invisible
+;;;      after the loop, which is the behaviour the chapter promises when it
+;;;      says the variable "is scoped to the rest of the for loop".
+;;;
+;;; Each wrapping is also skipped when its clause was omitted, so `for (;;) x;`
+;;; desugars to a bare `while (true) x;` with no empty blocks around it. That
+;;; matters for more than tidiness: a `--ast` dump of a `for` loop is how a
+;;; reader *sees* the desugaring, so the tree should contain what the source
+;;; said and nothing else.
+;;;
+;;; One consequence worth stating, since it is a real behavioural difference
+;;; and not just a representation choice: because the increment lives at the
+;;; end of the body, a challenge 9.3 `break` skips it, which is correct (the
+;;; loop is over). A `continue`, had we added one, would skip it too, which
+;;; would be *wrong* - and that is the standard argument for why `continue`
+;;; cannot be desugared this way and `for` sometimes earns a real node after
+;;; all. See docs/chapter09-challenges.md.
+;;; ---------------------------------------------------------------------------
+
+(defn parse-for-initializer
+  "The first clause of a `for`: a var declaration, an expression statement, or
+  nothing at all. Returns [state' initializer-or-nil].
+
+  \"If the token following that is a semicolon then the initializer has been
+  omitted. Otherwise, we check for a var keyword to see if it's a variable
+  declaration. If neither of those matched, it must be an expression. We parse
+  that and wrap it in an expression statement so that the initializer is
+  always of type Stmt.\"
+
+  Both non-empty branches consume the `;` themselves, as part of the `varDecl`
+  / `exprStmt` they parse. This is the one place in the grammar where a
+  declaration and a statement are both allowed, which the book cheerfully
+  admits undercuts chapter 8's prose: \"In a previous chapter, I said we can
+  split expression and statement syntax trees into two separate class
+  hierarchies because there's no single place in the grammar that allows both
+  an expression and a statement. That wasn't entirely true, I guess.\" The
+  *families* are still disjoint, though - this clause produces a `stmt` either
+  way, which is exactly why the book wraps the expression case."
+  [state]
+  (cond
+    (check? state :semicolon) [(advance state) nil]
+    (check? state :var)       (parse-var-declaration (advance state))
+    :else                     (parse-expression-statement state)))
+
+(defn parse-for-statement
+  "Book: `forStatement()`. Parse a C-style `for` and desugar it on the spot.
+
+    forStmt -> \"for\" \"(\" ( varDecl | exprStmt | \";\" )
+               expression? \";\" expression? \")\" statement ;
+
+  The `for` token has already been consumed. Returns a tree built only from
+  `:block`, `:while` and whatever the clauses produced - never a `:for` node,
+  because there is no such thing. See the commentary above."
+  [state]
+  (let [state (consume state :left-paren "Expect '(' after 'for'.")
+
+        ;; Clause 1 - the initializer. Runs once, before anything else.
+        [state initializer] (parse-for-initializer state)
+
+        ;; Clause 2 - the condition. Checked before every iteration, the
+        ;; first one included. An omitted condition is an infinite loop.
+        [state condition]   (if (check? state :semicolon)
+                              [state nil]
+                              (parse-expression state))
+        state (consume state :semicolon "Expect ';' after loop condition.")
+
+        ;; Clause 3 - the increment. Runs at the end of every iteration and
+        ;; its value is discarded, so it is useful only for its side effect.
+        [state increment]   (if (check? state :right-paren)
+                              [state nil]
+                              (parse-expression state))
+        state (consume state :right-paren "Expect ')' after for clauses.")
+
+        ;; The body. `parse-loop-body` rather than `parse-statement`, so that
+        ;; challenge 9.3's `break` is legal inside a `for` as well as inside a
+        ;; `while`. The desugaring below happens *after* this, so the
+        ;; `:loop-depth` bookkeeping cannot be left to the `:while` node we
+        ;; are about to build - by then the body has long since been parsed.
+        [state body]        (parse-loop-body state)
+
+        ;; --- the desugaring, built inside out ---
+        body (if increment
+               (ast/block-stmt [body (ast/expression-stmt increment)])
+               body)
+        body (ast/while-stmt (or condition (ast/literal true)) body)
+        body (if initializer
+               (ast/block-stmt [initializer body])
+               body)]
+    [state body]))
+
+;;; ---------------------------------------------------------------------------
+;;; Challenge 9.3 - `break`
+;;;
+;;;   breakStmt -> "break" ";" ;
+;;;
+;;; "It should be a syntax error to have a break statement appear outside of
+;;;  any enclosing loop." Two halves, and only the first is obvious:
+;;;
+;;;   * it is a *syntax* error, so it is detected here and not at run time,
+;;;     and a program containing one never executes at all - not even the
+;;;     statements before the offending `break`;
+;;;   * "outside of any enclosing loop" is about the *statically* enclosing
+;;;     loop, which is what makes it checkable at parse time at all.
+;;;     `:loop-depth` counts exactly that, and the challenge's reminder that
+;;;     "the break may be nested inside other blocks and if statements that
+;;;     also need to be exited" is handled for free: blocks and `if`s do not
+;;;     touch the depth, so a `break` three blocks deep inside a loop body is
+;;;     still inside the loop.
+;;;
+;;; The error is reported but *not thrown*, for the reason section 8.4.1 gives
+;;; for "Invalid assignment target.": the parser is not confused. We are
+;;; looking at `break` followed by `;`, we know precisely how to carry on, and
+;;; panicking would discard the rest of a perfectly parseable statement. The
+;;; node is built as if nothing were wrong; `had-error` guarantees it is never
+;;; run, and parsing continues so that a second, unrelated mistake is still
+;;; reported in the same pass.
+;;; ---------------------------------------------------------------------------
+
+(defn parse-break-statement
+  "Challenge 9.3. Parse `break ;`, reporting an error if we are not in a loop.
+
+  The `break` token has already been consumed."
+  [state]
+  (let [break-token (previous-token state)
+        state       (consume state :semicolon "Expect ';' after 'break'.")]
+    (when-not (pos? (:loop-depth state 0))
+      (err/error break-token "Must be inside a loop to use 'break'."))
+    [state (ast/break-stmt break-token)]))
+
 (defn parse-statement
   "Book: `statement()`.
 
-    statement -> exprStmt | printStmt | block ;
+    statement -> exprStmt | forStmt | ifStmt | printStmt | whileStmt | block ;
 
   \"We determine which specific statement rule is matched by looking at the
   current token\" - the leading keyword or brace - and fall through to an
-  expression statement when none matches. Chapter 9 adds `if`, `while` and
-  `for` to this `cond`; chapter 10 adds `return`."
+  expression statement when none matches.
+
+  CHAPTER 9 adds three clauses, four with challenge 9.3's `break`. They are
+  listed in the book's order, which is alphabetical by keyword rather than
+  meaningful: every clause is selected by a distinct leading token, so no
+  clause can shadow another and the order is free. Chapter 10 adds `return`."
   [state]
   (cond
+    (check? state :for)
+    (parse-for-statement (advance state))
+
+    (check? state :if)
+    (parse-if-statement (advance state))
+
     (check? state :print)
     (parse-print-statement (advance state))
+
+    (check? state :while)
+    (parse-while-statement (advance state))
+
+    ;; Challenge 9.3. Only reachable when `lox.token/*allow-break?*` is on,
+    ;; because the scanner produces no `:break` token otherwise - with the
+    ;; switch off `break` arrives as an `:identifier` and falls through to the
+    ;; expression statement below, exactly as in the book's Lox.
+    (check? state :break)
+    (parse-break-statement (advance state))
 
     (check? state :left-brace)
     (let [[state statements] (parse-block (advance state))]
@@ -961,9 +1372,14 @@
   caught by a human reading both.
 
   CHAPTER 8 changed two lines: `expression` now routes to `assignment`, and
-  `primary` gained its IDENTIFIER clause."
+  `primary` gained its IDENTIFIER clause.
+
+  CHAPTER 9 changed one and added two: `assignment` falls through to
+  `logic_or` instead of `equality`, and the two logical levels sit between."
   ["expression -> assignment ;"
-   "assignment -> IDENTIFIER \"=\" assignment | equality ;"
+   "assignment -> IDENTIFIER \"=\" assignment | logic_or ;"
+   "logic_or   -> logic_and ( \"or\" logic_and )* ;"
+   "logic_and  -> equality ( \"and\" equality )* ;"
    "equality   -> comparison ( ( \"!=\" | \"==\" ) comparison )* ;"
    "comparison -> term ( ( \">\" | \">=\" | \"<\" | \"<=\" ) term )* ;"
    "term       -> factor ( ( \"-\" | \"+\" ) factor )* ;"
@@ -976,20 +1392,56 @@
   "The chapter 8 statement grammar, as text, starting rule first.
 
   Separate from `grammar` because the two really are disjoint grammars over
-  disjoint node families - see `lox.ast`, section 8.1.1."
+  disjoint node families - see `lox.ast`, section 8.1.1.
+
+  CHAPTER 9 adds three productions - `ifStmt`, `whileStmt` and `forStmt` -
+  and three clauses to `statement`. Note that `forStmt` is listed here even
+  though no `:for` node exists: it is a real production of the *syntactic*
+  grammar, which is what this documents. What the parser builds from it is a
+  separate question, answered by `parse-for-statement`'s desugaring."
   ["program     -> declaration* EOF ;"
    "declaration -> varDecl | statement ;"
    "varDecl     -> \"var\" IDENTIFIER ( \"=\" expression )? \";\" ;"
-   "statement   -> exprStmt | printStmt | block ;"
+   "statement   -> exprStmt | forStmt | ifStmt | printStmt | whileStmt"
+   "             | block ;"
    "exprStmt    -> expression \";\" ;"
+   "forStmt     -> \"for\" \"(\" ( varDecl | exprStmt | \";\" )"
+   "               expression? \";\" expression? \")\" statement ;"
+   "ifStmt      -> \"if\" \"(\" expression \")\" statement"
+   "               ( \"else\" statement )? ;"
    "printStmt   -> \"print\" expression \";\" ;"
+   "whileStmt   -> \"while\" \"(\" expression \")\" statement ;"
    "block       -> \"{\" declaration* \"}\" ;"])
 
+(def break-grammar
+  "Challenge 9.3's one production, kept apart from `statement-grammar` for the
+  same reason the challenge is kept behind a switch: it is not part of the
+  book's Lox. With `lox.token/*allow-break?*` on, `statement` gains a
+  `| breakStmt` clause as well."
+  ["breakStmt   -> \"break\" \";\" ;"])
+
 (def precedence-order
-  "Rule names from loosest-binding to tightest. Book: the table in section 6.1."
-  (into [:expression]
+  "Rule names from loosest-binding to tightest. Book: the table in section 6.1.
+
+  CHAPTER 8 and 9 both widened this. `:assignment` is loosest of the book's
+  levels, then chapter 9's `:logic-or` and `:logic-and`, and only then the
+  four `binary-levels` of chapter 6. The two challenge levels are *not* here:
+  `comma` and `conditional` are off by default, so the default grammar's
+  precedence table is exactly the book's, which is what this records."
+  (into [:expression :assignment :logic-or :logic-and]
         (concat (map :rule binary-levels) [:unary :primary])))
+
+(def logical-levels
+  "The chapter 9 precedence levels, loosest first, as data.
+
+  The counterpart of `binary-levels`, and deliberately a separate table: these
+  two operators short-circuit, so they must *not* be swept up by anything that
+  iterates the operators which evaluate both operands - challenge 6.3's error
+  productions above being the live example."
+  [{:rule :logic-or  :token :or  :operand :logic-and}
+   {:rule :logic-and :token :and :operand :equality}])
 
 (def statement-rules
   "The statement rules, in the order `statement-grammar` documents them."
-  [:program :declaration :var-decl :statement :expr-stmt :print-stmt :block])
+  [:program :declaration :var-decl :statement :expr-stmt :for-stmt :if-stmt
+   :print-stmt :while-stmt :block])

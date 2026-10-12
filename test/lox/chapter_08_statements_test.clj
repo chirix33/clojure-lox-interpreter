@@ -62,7 +62,12 @@
     ;; "Expression : Expr expression"
     ;; "Print      : Expr expression"
     ;; "Var        : Token name, Expr initializer"
-    (is (= #{:block :expression :print :var} ast/stmt-node-types))
+    ;; CHAPTER 9 added :if, :while and challenge 9.3's :break to the family,
+    ;; so chapter 8's claim is now about a *subset*: these four productions
+    ;; exist and have exactly these fields. The exact set of the family is
+    ;; asserted by whichever chapter currently owns the last one added - see
+    ;; the chapter 9 suite.
+    (is (every? ast/stmt-node-types #{:block :expression :print :var}))
     (is (= '[[:stmts statements]]              (:block ast/stmt-types)))
     (is (= '[[:expr expression]]               (:expression ast/stmt-types)))
     (is (= '[[:expr expression]]               (:print ast/stmt-types)))
@@ -1085,7 +1090,11 @@
   (testing "with both off - the default - the chain is exactly the book's"
     (is (false? parser/*allow-comma?*))
     (is (false? parser/*allow-conditional?*))
-    (is (= "assignment -> IDENTIFIER \"=\" assignment | equality ;"
+    ;; CHAPTER 9 changed the fall-through from `equality` to `logic_or`, which
+    ;; is the book's own chapter 9 edit to this production. The claim being
+    ;; made here is unchanged - with both challenge switches off, the
+    ;; documented chain is exactly the book's - only the book moved.
+    (is (= "assignment -> IDENTIFIER \"=\" assignment | logic_or ;"
            (second parser/grammar)))))
 
 (deftest chapter-7-challenges-still-work-through-statements

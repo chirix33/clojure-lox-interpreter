@@ -106,7 +106,20 @@
   ;; distinction section 8.4.1 draws between l-values and r-values is visible
   ;; in the printed form, which is exactly what this printer is for.
   (:assign   [{:keys [name value]}]
-             (str "(= " (:lexeme name) " " (ast/accept value printer) ")")))
+             (str "(= " (:lexeme name) " " (ast/accept value printer) ")"))
+
+  ;; Chapter 9. `(or a b)`, `(and a b)` - the operator's own lexeme, exactly
+  ;; as `:binary` does, because that is what the operator is called.
+  ;;
+  ;; The printed form is therefore *identical* to what a `:binary` node with
+  ;; the same operator would produce. That is not a defect: this printer shows
+  ;; the shape of the tree, and the shape really is the same. What differs is
+  ;; when the operands are evaluated, which is behaviour, and behaviour is not
+  ;; something a static rendering can show. (A Lisp reader would agree, for
+  ;; that matter: `and` and `or` are special forms there for the same reason
+  ;; they are a separate node here, and they still print as lists.)
+  (:logical  [{:keys [left operator right]}]
+             (parenthesize (:lexeme operator) left right)))
 
 (defn print-ast
   "Book: `AstPrinter.print(expr)`. Returns the string; it does not print it."
@@ -171,7 +184,18 @@
   ;; reading this has to treat `=` specially - which is the same observation
   ;; the book makes about l-values, arrived at from the other direction.
   (:assign   [{:keys [name value]}]
-             (str (rpn-of value) " " (:lexeme name) " =")))
+             (str (rpn-of value) " " (:lexeme name) " ="))
+
+  ;; Chapter 9. Postfix like any other binary operator - but note that the
+  ;; result is no longer faithfully evaluable by a stack machine, and for a
+  ;; reason worth naming rather than hiding. RPN is strict: a stack machine
+  ;; pops two operands that have *already* been computed, so `a b or` cannot
+  ;; short-circuit. Rendering is still well defined and still round-trips the
+  ;; tree's shape, which is what this printer is for; faithfully representing
+  ;; lazy evaluation would need a notation with a concept of unevaluated code,
+  ;; which RPN by construction does not have.
+  (:logical  [{:keys [left operator right]}]
+             (str (rpn-of left) " " (rpn-of right) " " (:lexeme operator))))
 
 (defn print-rpn
   "Challenge 5.3: render `expr` in reverse Polish notation."
@@ -189,6 +213,24 @@
 ;;;   var a;              (var a)
 ;;;   var a = 1;          (var a 1.0)
 ;;;   { var a; print a; } (block (var a) (print a))
+;;;
+;;; and, from chapter 9:
+;;;
+;;;   if (a) b;             (if a (; b))
+;;;   if (a) b; else c;     (if a (; b) (; c))
+;;;   while (a) b;          (while a (; b))
+;;;   for (var i = 0; i < 2; i = i + 1) b;
+;;;                         (block (var i 0.0)
+;;;                                (while (< i 2.0)
+;;;                                  (block (; b) (; (= i (+ i 1.0))))))
+;;;   break;                (break)
+;;;
+;;; That `for` line is the most useful thing this printer does in chapter 9.
+;;; The desugaring of section 9.5.1 is invisible in the source and invisible
+;;; in the interpreter, so a printed tree is the only place a reader can
+;;; actually *see* that `for` became a block around a while around a block -
+;;; which is why `clox --ast` on a `for` loop is worth running, and why the
+;;; chapter 9 tests assert on these strings rather than on nested maps.
 ;;;
 ;;; An expression statement is tagged `;` because that semicolon is the only
 ;;; thing in the source that marks it, and because a statement that printed
@@ -219,7 +261,33 @@
   (:block      [{:keys [statements]}]
                (str "(block"
                     (str/join (map #(str " " (stmt-of %)) statements))
-                    ")")))
+                    ")"))
+
+  ;; Chapter 9.
+  ;;
+  ;;   if (a) b;           (if a (; b))
+  ;;   if (a) b; else c;   (if a (; b) (; c))
+  ;;
+  ;; Two elements or three, mirroring `var` with and without an initializer,
+  ;; and for the same reason: the absent else branch is a missing *node*, and
+  ;; `(if a (; b))` versus `(if a (; b) (block))` is the difference between
+  ;; "no else clause" and "an else clause containing nothing". The second is
+  ;; writable in Lox (`if (a) b; else {}`) and means something subtly
+  ;; different, so the two must not print alike.
+  (:if         [{:keys [condition then-branch else-branch]}]
+               (str "(if " (ast/accept condition printer)
+                    " " (stmt-of then-branch)
+                    (when (some? else-branch) (str " " (stmt-of else-branch)))
+                    ")"))
+
+  (:while      [{:keys [condition body]}]
+               (str "(while " (ast/accept condition printer)
+                    " " (stmt-of body) ")"))
+
+  ;; Challenge 9.3. No operands, so it prints as a bare atom - the one
+  ;; statement form with nothing inside it.
+  (:break      [_]
+               "(break)"))
 
 (defn print-statement
   "Render one statement."

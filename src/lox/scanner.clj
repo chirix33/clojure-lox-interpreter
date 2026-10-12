@@ -180,7 +180,11 @@
   "Book: identifier(). Maximal munch first, keyword lookup second."
   [s]
   (let [s (loop [s s] (if (alpha-numeric? (peek-char s)) (recur (advance s)) s))]
-    (add-token s (get tok/keywords (lexeme s) :identifier))))
+    ;; CHAPTER 9: `tok/keyword-type` rather than a direct lookup in
+    ;; `tok/keywords`, so that challenge 9.3's `break` can be a reserved word
+    ;; only when it is switched on. Maximal munch is unaffected - the maximal
+    ;; identifier lexeme is still read first, and only then classified.
+    (add-token s (tok/keyword-type (lexeme s)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The heart of the scanner
